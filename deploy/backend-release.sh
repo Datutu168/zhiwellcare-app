@@ -81,8 +81,10 @@ sudo systemctl restart zhiwellcare-app
 sleep 6
 
 systemctl is-active --quiet zhiwellcare-app || rollback
-curl -fsS -m 8 "$HEALTH" >/tmp/_health || rollback
-echo "[backend] 健康检查通过: $(cat /tmp/_health)"
+# 不用固定路径的临时文件（/tmp/_health）承接响应：固定名一旦被别的用户/历史运行留下，
+# 即便 root 也可能因目录权限策略写不进去，把一个"健康检查通过"误判成启动失败并触发回滚。
+HEALTH_BODY=$(curl -fsS -m 8 "$HEALTH" 2>/dev/null) || rollback
+echo "[backend] 健康检查通过: $HEALTH_BODY"
 
 # 依赖 schema 的接口探测：迁移漏传/失败会在这里暴露（而不是等用户点开页面才发现 500）
 for path in /api/v1/catalog/courses /api/v1/catalog/goods; do
@@ -96,4 +98,4 @@ done
 
 echo "[backend] 发布完成，上一版本二进制备份: $BACKUP"
 [ -d "$MIG_BACKUP" ] && echo "[backend] 上一版本迁移备份: $MIG_BACKUP"
-rm -f /tmp/_health
+exit 0

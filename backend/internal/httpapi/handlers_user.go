@@ -97,7 +97,10 @@ func (h *userHandler) changePassword(c *gin.Context) {
 		return
 	}
 	if !auth.VerifyPassword(user.PasswordHash, req.OldPassword) {
-		failUnauthorized(c, "原密码不正确")
+		// 刻意返回 400 而不是 401：这里登录态是有效的，失效的只是请求里填错的 oldPassword。
+		// 而客户端（后台 admin/src/api/http.ts、App src/api/http.ts）都把 401 当「登录态失效」
+		// 处理并清掉本地令牌——用 401 会让用户输错一次原密码就被静默踢回登录页。
+		failBadRequest(c, "原密码不正确")
 		return
 	}
 	hash, err := auth.HashPassword(req.NewPassword)

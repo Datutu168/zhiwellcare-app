@@ -60,12 +60,15 @@ func TestChangePassword(t *testing.T) {
 		t.Fatalf("未登录改密应 401，实际 %d", code)
 	}
 
-	// 2) 原密码错误 → 401「原密码不正确」
+	// 2) 原密码错误 → 400「原密码不正确」
+	//
+	// 刻意不是 401：登录态是有效的，失效的只是请求体里填错的 oldPassword；
+	// 客户端统一把 401 当「登录态失效」清令牌，用 401 会让用户输错一次就被踢回登录页。
 	code, res := putBody(t, engine, "/api/v1/me/password", token, map[string]any{
 		"oldPassword": "wrong-old-pass", "newPassword": newPassword,
 	})
-	if code != http.StatusUnauthorized || res.Message != "原密码不正确" {
-		t.Fatalf("原密码错误应 401 原密码不正确，实际 %d %s", code, res.Message)
+	if code != http.StatusBadRequest || res.Message != "原密码不正确" {
+		t.Fatalf("原密码错误应 400 原密码不正确，实际 %d %s", code, res.Message)
 	}
 
 	// 3) 新密码过短 → 400（沿用 validatePassword 文案）

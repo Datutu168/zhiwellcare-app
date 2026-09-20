@@ -33,6 +33,10 @@ type UserStore interface {
 	SetUserStatus(ctx context.Context, id string, status int) error
 	// SetUserRole 提升/回收角色（如 bootstrap 管理员）。
 	SetUserRole(ctx context.Context, id, role string) error
+	// UpdateUserPassword 覆盖用户口令哈希（入参已是哈希，任何日志都不得打印明文）。
+	// 用户不存在返回 ErrNotFound（映射 404），不要用 ErrUserNotFound ——那会被 mapStoreError
+	// 报成 401「手机号或密码不正确」，把「改自己密码时用户被删了」误导成密码错误。
+	UpdateUserPassword(ctx context.Context, userID string, passwordHash string) error
 }
 
 // CreateUserParams 注册入参（密码已由调用方哈希）。

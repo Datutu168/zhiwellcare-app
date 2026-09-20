@@ -128,6 +128,8 @@ func NewEngine(deps Deps) *gin.Engine {
 			protected.GET("/me", userAPI.me)
 			protected.PATCH("/me", userAPI.updateMe)
 			protected.PATCH("/me/phone", authAPI.bindPhone) // 微信用户补绑手机号
+			// 自助改密：任何登录用户都可以改自己的密码（无需权限点）
+			protected.PUT("/me/password", userAPI.changePassword)
 			protected.POST("/training/records", recordAPI.submit)
 			protected.GET("/me/training-records", recordAPI.myRecords)
 			// 后台前端据此控制菜单/按钮（登录即可读自己的角色与权限）

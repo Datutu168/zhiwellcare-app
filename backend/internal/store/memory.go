@@ -218,6 +218,19 @@ func (m *Memory) SetUserRole(_ context.Context, id, role string) error {
 	return nil
 }
 
+// UpdateUserPassword 覆盖口令哈希；用户不存在返回 ErrNotFound。
+func (m *Memory) UpdateUserPassword(_ context.Context, id, passwordHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	user := m.byID[id]
+	if user == nil {
+		return ErrNotFound
+	}
+	user.PasswordHash = passwordHash
+	user.UpdatedAt = time.Now()
+	return nil
+}
+
 func (m *Memory) Save(_ context.Context, userID, tokenHash string, expiresAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

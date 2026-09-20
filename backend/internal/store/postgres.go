@@ -54,6 +54,35 @@ func DBTarget(dbURL string) (host, database string) {
 	return cfg.ConnConfig.Host, cfg.ConnConfig.Database
 }
 
+// RequiredMigrations 是本二进制依赖的迁移文件清单：二进制与库结构必须严格同步。
+//
+// 背景：线上曾出现「新二进制已发布，但 migrations/004_content.sql 没有一起上传到服务器」的
+// 事故——RunMigrations 只遍历目录里实际存在的 .sql，缺文件被静默容忍，内容表从未建出来，
+// 服务却能正常启动（/healthz 报 ok），直到访问 /api/v1/catalog/courses 才 500。
+// 因此这里显式声明必需文件：缺任何一个都要在启动阶段直接失败，而不是带着「半套 schema」对外服务。
+var RequiredMigrations = []string{
+	"001_init.sql",
+	"002_catalog_admin.sql",
+	"003_rbac_config.sql",
+	"004_content.sql",
+}
+
+// missingMigrations 返回 RequiredMigrations 中未出现在 found（目录里实际存在的文件名）里的项，
+// 保持 RequiredMigrations 的声明顺序，便于日志里按版本先后阅读。
+func missingMigrations(found []string) []string {
+	present := make(map[string]struct{}, len(found))
+	for _, name := range found {
+		present[name] = struct{}{}
+	}
+	var missing []string
+	for _, name := range RequiredMigrations {
+		if _, exists := present[name]; !exists {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
 // RunMigrations 幂等执行 migrations/*.sql（按文件名顺序），可在每次启动调用。
 func (p *Postgres) RunMigrations(ctx context.Context, dir string) error {
 	entries, err := os.ReadDir(dir)
@@ -67,6 +96,12 @@ func (p *Postgres) RunMigrations(ctx context.Context, dir string) error {
 		}
 	}
 	sort.Strings(files)
+	// 必需迁移缺失即失败：放在读取目录之后、执行任何 SQL 之前，
+	// 且不触碰 p.pool，因此可以用零值 &Postgres{} 直接单元测试。
+	if missing := missingMigrations(files); len(missing) > 0 {
+		return fmt.Errorf("缺少必需的迁移文件: %s（部署时未把 migrations 里的这些 .sql 上传到 %s，请检查发布包）",
+			strings.Join(missing, ", "), dir)
+	}
 	for _, name := range files {
 		path := filepath.Join(dir, name)
 		script, err := os.ReadFile(path)
@@ -123,6 +158,18 @@ func (p *Postgres) UpdateNickname(ctx context.Context, id, nickname string) erro
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrUserNotFound
+	}
+	return nil
+}
+
+// UpdateUserPassword 覆盖口令哈希（入参已是哈希）。受影响行数为 0 表示用户已被删除 → ErrNotFound。
+func (p *Postgres) UpdateUserPassword(ctx context.Context, id, passwordHash string) error {
+	tag, err := p.pool.Exec(ctx, `UPDATE users SET password_hash=$2, updated_at=now() WHERE id=$1`, id, passwordHash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

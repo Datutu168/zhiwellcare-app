@@ -113,8 +113,8 @@ func (h *contentHandler) adminUpdateCourse(c *gin.Context) {
 		mapStoreError(c, err)
 		return
 	}
-	// 契约冻结：PUT 与 DELETE 均返回 data:{deleted:true}（见任务契约第 3 节），此处按字面实现。
-	ok(c, gin.H{"deleted": true})
+	// PUT 返回更新后的对象（data:{item}）；{deleted:true} 只属于 DELETE。
+	ok(c, gin.H{"item": req})
 }
 
 func (h *contentHandler) adminDeleteCourse(c *gin.Context) {
@@ -224,8 +224,8 @@ func (h *contentHandler) adminUpdateGoods(c *gin.Context) {
 		mapStoreError(c, err)
 		return
 	}
-	// 契约冻结：PUT 与 DELETE 均返回 data:{deleted:true}（见任务契约第 3 节），此处按字面实现。
-	ok(c, gin.H{"deleted": true})
+	// PUT 返回更新后的对象（data:{item}）；{deleted:true} 只属于 DELETE。
+	ok(c, gin.H{"item": req})
 }
 
 func (h *contentHandler) adminDeleteGoods(c *gin.Context) {

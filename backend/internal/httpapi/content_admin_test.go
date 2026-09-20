@@ -287,17 +287,23 @@ func TestAdminContentValidationAndContract(t *testing.T) {
 		t.Fatalf("上架后公开目录应可见: %+v", public)
 	}
 
-	// --- PUT：契约冻结为 data:{deleted:true}；路径参数为准 ---
+	// --- PUT：返回更新后的对象 data:{item}（{deleted:true} 只属于 DELETE）；路径参数为准 ---
 	code, res = doJSON(t, env.engine, http.MethodPut, "/api/v1/admin/courses/course-contract", adminToken, map[string]any{
 		"courseId": "ignored-by-path", "title": "契约课程（改）", "sort": 4, "status": "on",
 	})
 	if code != http.StatusOK {
 		t.Fatalf("更新课程失败: %d %s", code, res.Message)
 	}
-	if got := decode[struct {
-		Deleted bool `json:"deleted"`
-	}](t, res.Data); !got.Deleted {
-		t.Fatalf("PUT 契约应为 data:{deleted:true}，实际 %s", res.Data)
+	putItem := decode[struct {
+		Item     model.Course `json:"item"`
+		Deleted  *bool        `json:"deleted"`
+	}](t, res.Data)
+	if putItem.Item.CourseID != "course-contract" || putItem.Item.Title != "契约课程（改）" ||
+		putItem.Item.Sort != 4 || putItem.Item.Status != "on" {
+		t.Fatalf("PUT 应返回更新后的 item: %+v", putItem.Item)
+	}
+	if putItem.Deleted != nil {
+		t.Fatalf("PUT 不应返回 deleted 字段（那属于 DELETE）: %s", res.Data)
 	}
 	updated := decode[[]map[string]any](t, mustGet(t, env.engine, "/api/v1/catalog/courses"))
 	if len(updated) != 1 || updated[0]["title"] != "契约课程（改）" || updated[0]["sort"] != float64(4) {
@@ -371,10 +377,16 @@ func TestAdminContentValidationAndContract(t *testing.T) {
 		contentGoodsBody("goods-contract", "契约商品（改）", 2, "on")); code != http.StatusOK {
 		t.Fatalf("更新商品失败: %d %s", code, res.Message)
 	}
-	if !decode[struct {
-		Deleted bool `json:"deleted"`
-	}](t, res.Data).Deleted {
-		t.Fatalf("商品 PUT 契约应为 data:{deleted:true}，实际 %s", res.Data)
+	putGoods := decode[struct {
+		Item    model.MallGoods `json:"item"`
+		Deleted *bool           `json:"deleted"`
+	}](t, res.Data)
+	if putGoods.Item.GoodsID != "goods-contract" || putGoods.Item.Name != "契约商品（改）" ||
+		putGoods.Item.Sort != 2 || putGoods.Item.Status != "on" || putGoods.Item.PriceCents != 19900 {
+		t.Fatalf("PUT 商品应返回更新后的 item: %+v", putGoods.Item)
+	}
+	if putGoods.Deleted != nil {
+		t.Fatalf("PUT 商品不应返回 deleted 字段: %s", res.Data)
 	}
 	if code, _ = doJSON(t, env.engine, http.MethodDelete, "/api/v1/admin/goods/goods-contract", adminToken, nil); code != http.StatusOK {
 		t.Fatalf("删除商品失败: %d", code)

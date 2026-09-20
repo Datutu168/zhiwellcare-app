@@ -16,6 +16,7 @@ import ProductDetailView from '../views/mall/ProductDetailView.vue'
 import MineHomeView from '../views/mine/MineHomeView.vue'
 import OrdersView from '../views/mine/OrdersView.vue'
 import DisclaimerView from '../views/mine/DisclaimerView.vue'
+import ChangePasswordView from '../views/mine/ChangePasswordView.vue'
 import LoginView from '../views/auth/LoginView.vue'
 import RegisterView from '../views/auth/RegisterView.vue'
 
@@ -34,6 +35,7 @@ export const router = createRouter({
     { path: '/mine', component: MineHomeView },                                    // 我的
     { path: '/mine/orders', component: OrdersView },                               // 订单聚合
     { path: '/mine/disclaimer', component: DisclaimerView },                       // 免责声明 / 隐私
+    { path: '/mine/password', component: ChangePasswordView },                     // 修改密码（需登录）
     // ── 账号 ─────────────────────────────────────
     { path: '/auth/login', component: LoginView, meta: { hideChrome: true } },     // 登录
     { path: '/auth/register', component: RegisterView, meta: { hideChrome: true } }, // 注册

@@ -99,6 +99,7 @@ function formatError(error: unknown): string { return error instanceof Error ? e
           <p>手机号：{{ auth.user?.phoneMasked ?? '—' }} · 训练数据将随登录账号同步云端</p>
         </div>
         <div class="row">
+          <button class="button" type="button" @click="open('/mine/password')">修改密码</button>
           <button class="button danger" type="button" @click="logout">退出登录</button>
         </div>
       </section>

@@ -3,7 +3,7 @@
 > 纯消费级居家主动训练产品，对标 Keep 生态：自研智能硬件 IoT 互联、游戏化训练、课程体系、硬件商城 + 居家训练服务、个人训练数据。
 > 本产品**无医疗属性、无康复服务、无被动电机驱动、无医学评估**；医疗器械设备独立承载于全新医疗 APP，与本工程完全隔离。
 
-## 一、多端统一架构（一套代码跑通手机/平板/Windows/网页）
+## 一、多端统一架构（一套代码跑通手机/平板/桌面端/网页）
 
 ```
 ┌─────────────────────────── 一套 Web 业务代码库 ───────────────────────────┐
@@ -17,7 +17,7 @@
 │     BLE / 屏幕常亮 / 返回键 / 更新 / 生命周期                                │
 │  适配：视口归一化 + 媒体查询（CSS 令牌对齐官网品牌）                          │
 └────────────────────────────────────────────────────────────────────────────┘
-        │ Android/iOS/平板: Capacitor 8 │ Windows 桌面: Tauri 2 │ 网页: 静态 CDN
+        │ Android/iOS/平板: Capacitor 8 │ 桌面端(Windows/macOS): Tauri 2 │ 网页: 静态 CDN
 ```
 
 - 页面/业务/游戏/适配逻辑全部统一，无多端差异；原生差异（BLE、常亮、更新、返回键）只在 `src/platform` 注入。
@@ -71,9 +71,11 @@ npm run build         # vue-tsc + vite build（产物 dist/ 供三端壳复用�
 
 平台壳（原生构建环境齐备后）：
 ```powershell
-npm run tauri:dev            # Windows 桌面（BLE 走 Tauri Rust btleplug）
+npm run tauri:dev            # 桌面窗口（Windows / macOS，BLE 走 Tauri Rust btleplug）
 npm run android:build:debug  # Android APK（BLE 走 Capacitor bluetooth-le）
 ```
+macOS 打包用 `./04-pack-macos.sh`（**必须在 Mac 上构建**，Tauri 无法交叉编译 macOS 目标），
+详见 `打包与发布说明.md` 第五节。
 环境变量参考 `.env.example`（目录/上报/签名密钥均不落库）。
 
 ## 七、目录速览
@@ -89,7 +91,7 @@ src/
 ├─ data/        Mock 目录/课程/商品数据（等价后端配置表快照）
 └─ stores/      Pinia（sensor / deviceLibrary 多设备库）
 android/  Capacitor Android 壳（包名 com.zhiwellcare.app）
-src-tauri/ Tauri 2 Windows 壳（identifier com.zhiwellcare.app）
+src-tauri/ Tauri 2 桌面壳（Windows / macOS，identifier com.zhiwellcare.app）
 ```
 
 ## 八、后端与基础设施（Golang + Gin）
@@ -136,7 +138,7 @@ src-tauri/ Tauri 2 Windows 壳（identifier com.zhiwellcare.app）
 
 - 密码 bcrypt；访问令牌 JWT(HS256, 2h)；刷新令牌 32 字节随机值，库中仅存 SHA-256 哈希。
 - 表结构 `backend/migrations/001_init.sql`（幂等，服务启动自动执行）；存储层接口化，`APP_DB_URL` 未配置时自动回退内存演示模式。
-- 统一响应 `{code, message, data}`；CORS 白名单支持 Vite 网页 / Capacitor(Android/iOS) / Tauri(Windows) 跨端来源。
+- 统一响应 `{code, message, data}`；CORS 白名单支持 Vite 网页 / Capacitor(Android/iOS) / Tauri(桌面端 Windows/macOS) 跨端来源。
 - 运行：`cd backend` → 复制 `.env.example` 为 `.env` 填 `APP_DB_URL` → `go run ./cmd/server`。
 - 测试：`go test ./...`（含内存全链路用例）；配 `APP_TEST_DB_URL` 可跑 PostgreSQL 真库集成用例。
 

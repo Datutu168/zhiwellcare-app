@@ -48,8 +48,9 @@ export class TauriUpdateProvider implements IUpdateProvider {
   }
 
   async install(): Promise<void> {
-    if (!this.update) throw new Error('请先下载 Windows 更新。')
-    // Windows 安装器启动后会退出当前进程，不额外调用 Process relaunch。
+    if (!this.update) throw new Error('请先下载更新包。')
+    // 桌面端安装：Windows 由安装器接管并退出当前进程（不额外调用 relaunch）；
+    // macOS 要求应用已签名才能自更新，未签名版本会在这一步失败——请改用手动安装新 .dmg。
     await this.update.install()
   }
 

@@ -6,7 +6,7 @@ describe('WebUnsupportedSensorTransport', () => {
     const transport = new WebUnsupportedSensorTransport()
     await expect(transport.scan()).rejects.toMatchObject({
       code: 'unsupported',
-      message: '当前浏览器环境不支持训练设备 BLE，请在 Windows Tauri 应用或 Android 应用中操作。',
+      message: '当前浏览器环境不支持训练设备 BLE，请在桌面端应用（Windows / macOS）或 Android 应用中操作。',
     })
   })
 })

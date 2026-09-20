@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 蓝牙：连接 BS-BT91 训练设备所需。开启 App Sandbox 或做公证分发时必须声明；
+	     纯本地、未签名的构建其实用不到，但预先写好可以让"以后买了开发者账号"这一步不用再回头改。 -->
+	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+
+	<!-- 以下为 Tauri 桌面应用在 macOS 上的常规项：WKWebView 需要 JIT 与可执行内存，
+	     应用需要发起出站请求（连后端 API）。自定义 entitlements 文件会**整体替换**默认值，
+	     所以这里一并列出，避免只写蓝牙而把网络/JIT 关掉。 -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

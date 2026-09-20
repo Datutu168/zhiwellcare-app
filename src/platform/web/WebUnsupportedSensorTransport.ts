@@ -2,7 +2,7 @@ import type { ISensorTransport } from '../../core/sensor/ISensorTransport'
 import type { SensorConnectionState, SensorDataPacket, SensorDevice } from '../../core/sensor/SensorDevice'
 import { SensorTransportError } from '../../core/sensor/SensorTransportError'
 
-const WEB_BLE_MESSAGE = '当前浏览器环境不支持训练设备 BLE，请在 Windows Tauri 应用或 Android 应用中操作。'
+const WEB_BLE_MESSAGE = '当前浏览器环境不支持训练设备 BLE，请在桌面端应用（Windows / macOS）或 Android 应用中操作。'
 
 /** 普通浏览器只承担界面预览，所有真实设备入口都返回可读提示。 */
 export class WebUnsupportedSensorTransport implements ISensorTransport {

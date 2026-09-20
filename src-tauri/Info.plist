@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 训练设备（BS-BT91）通过 BLE 连接。macOS 10.15 起，访问 CoreBluetooth
+	     必须先声明用途说明，否则系统会直接拒绝（表现为扫描永远拿不到设备，或进程被终止）。
+	     Tauri 会把本文件与自动生成的 Info.plist 合并，不要在这里覆盖版本号等默认字段。 -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>用于连接智为康乐训练设备（BS-BT91）并接收训练数据。</string>
+	<!-- 兼容 macOS 10.13 / 10.14 的旧键名，系统版本较低时读取的是这一条。 -->
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>用于连接智为康乐训练设备（BS-BT91）并接收训练数据。</string>
+</dict>
+</plist>

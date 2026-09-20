@@ -14,6 +14,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:macos": "tauri build --bundles app,dmg",
+    "tauri:build:macos:universal": "tauri build --bundles app,dmg --target universal-apple-darwin",
     "cap": "cap",
     "android:sync": "npm run build && cap sync android",
     "android:build:debug": "npm run android:sync && cd android && gradlew.bat assembleDebug",

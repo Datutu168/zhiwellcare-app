@@ -8,6 +8,9 @@ import { ApiError, api } from './http'
 export type AssetKind = 'web' | 'game' | 'firmware'
 export type AssetStatus = 'published' | 'offline' | string
 
+/** 内容（教程课程 / 商品）上下架状态：后端 `status: "on" | "off"`。 */
+export type ContentStatus = 'on' | 'off'
+
 export interface MePermissions {
   roles: string[]
   permissions: string[]
@@ -110,6 +113,68 @@ export interface WhitelistPayload extends DeviceKeyPayload {
   enabled?: boolean
 }
 
+/* ------------------------------------------------------------------ *
+ * 教程（课程）：GET /admin/courses 含下架项；POST 为 upsert。
+ * 图片/视频只存 URL（运营把 COS 地址粘进来），后台不做上传。
+ * ------------------------------------------------------------------ */
+
+export interface CourseItem {
+  courseId: string
+  title: string
+  summary?: string
+  coverUrl?: string
+  videoUrl?: string
+  durationLabel?: string
+  level?: string
+  tags?: string[]
+  status: ContentStatus | string
+  sort?: number
+}
+
+export interface CoursePayload {
+  courseId: string
+  title: string
+  summary: string
+  coverUrl: string
+  videoUrl: string
+  durationLabel: string
+  level: string
+  tags: string[]
+  status: ContentStatus
+  sort: number
+}
+
+/* ------------------------------------------------------------------ *
+ * 商品：价格以后端 `priceCents`（分，整数）为准，界面按「元」输入后换算。
+ * ------------------------------------------------------------------ */
+
+export interface GoodsItem {
+  goodsId: string
+  name: string
+  summary?: string
+  /** 分为单位的整数（后端权威字段） */
+  priceCents?: number
+  /** 后端给的展示文案，为空时前端按 priceCents 自行换算 */
+  priceLabel?: string
+  coverUrl?: string
+  detailUrl?: string
+  specs?: string[]
+  status: ContentStatus | string
+  sort?: number
+}
+
+export interface GoodsPayload {
+  goodsId: string
+  name: string
+  summary: string
+  priceCents: number
+  coverUrl: string
+  detailUrl: string
+  specs: string[]
+  status: ContentStatus
+  sort: number
+}
+
 /** 复用既有设备型号目录接口（DevicesView 同样直接取数组）。 */
 export interface DeviceModelBrief {
   modelId: string
@@ -157,6 +222,24 @@ export const adminApi = {
   deleteMapping: (deviceKey: string) =>
     api.delete<{ deleted: boolean }>(`/admin/device-mappings/${seg(deviceKey)}`),
 
+  /* 教程 / 课程（GET 含下架项；POST 为 upsert） */
+  listCourses: () => api.get<{ items: CourseItem[] }>('/admin/courses'),
+  upsertCourse: (body: CoursePayload) => api.post<{ item?: CourseItem }>('/admin/courses', body),
+  updateCourse: (courseId: string, body: CoursePayload) =>
+    api.put<{ item?: CourseItem }>(`/admin/courses/${seg(courseId)}`, body),
+  deleteCourse: (courseId: string) => api.delete<{ deleted: boolean }>(`/admin/courses/${seg(courseId)}`),
+  setCourseStatus: (courseId: string, status: ContentStatus) =>
+    api.patch<{ item?: CourseItem }>(`/admin/courses/${seg(courseId)}/status`, { status }),
+
+  /* 商品（GET 含下架项；POST 为 upsert） */
+  listGoods: () => api.get<{ items: GoodsItem[] }>('/admin/goods'),
+  upsertGoods: (body: GoodsPayload) => api.post<{ item?: GoodsItem }>('/admin/goods', body),
+  updateGoods: (goodsId: string, body: GoodsPayload) =>
+    api.put<{ item?: GoodsItem }>(`/admin/goods/${seg(goodsId)}`, body),
+  deleteGoods: (goodsId: string) => api.delete<{ deleted: boolean }>(`/admin/goods/${seg(goodsId)}`),
+  setGoodsStatus: (goodsId: string, status: ContentStatus) =>
+    api.patch<{ item?: GoodsItem }>(`/admin/goods/${seg(goodsId)}/status`, { status }),
+
   /* 资产发布 */
   createUploadUrl: (body: UploadUrlPayload) => api.post<UploadTicket>('/admin/assets/upload-url', body),
   registerAsset: (body: RegisterAssetPayload) => api.post<{ asset?: AssetItem }>('/admin/assets', body),
@@ -194,4 +277,12 @@ export function apiErrorText(e: unknown, fallback = '操作失败，请稍后重
     }
   }
   return e instanceof Error ? e.message : fallback
+}
+
+/** 内容管理（教程课程 / 商品）专用：403 明确提示「没有权限」，其余复用统一映射。 */
+export function contentErrorText(e: unknown, fallback = '操作失败，请稍后重试'): string {
+  if (e instanceof ApiError && e.status === 403) {
+    return e.message || '当前账号没有内容管理权限（403），请联系管理员分配 content:read / content:write'
+  }
+  return apiErrorText(e, fallback)
 }

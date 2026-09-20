@@ -10,6 +10,8 @@ import DashboardView from './views/DashboardView.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 import DevicesView from './views/catalog/DevicesView.vue'
 import GamesView from './views/catalog/GamesView.vue'
+import CoursesView from './views/content/CoursesView.vue'
+import GoodsView from './views/content/GoodsView.vue'
 import WhitelistView from './views/devices/WhitelistView.vue'
 import AssetsView from './views/assets/AssetsView.vue'
 import UsersView from './views/users/UsersView.vue'
@@ -45,6 +47,16 @@ export const router: Router = createRouter({
           meta: { title: '设备白名单 / 映射', permission: menuPermission('/devices/whitelist') },
         },
         { path: 'games', component: GamesView, meta: { title: '游戏目录', permission: menuPermission('/games') } },
+        {
+          path: 'content/courses',
+          component: CoursesView,
+          meta: { title: '教程课程', permission: menuPermission('/content/courses') },
+        },
+        {
+          path: 'content/goods',
+          component: GoodsView,
+          meta: { title: '商品管理', permission: menuPermission('/content/goods') },
+        },
         { path: 'assets', component: AssetsView, meta: { title: '资产发布', permission: menuPermission('/assets') } },
         { path: 'users', component: UsersView, meta: { title: '用户管理', permission: menuPermission('/users') } },
         { path: 'records', component: RecordsView, meta: { title: '训练记录', permission: menuPermission('/records') } },

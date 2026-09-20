@@ -18,13 +18,18 @@ import { it } from 'vitest'
 
 import { adminToken } from '../src/api/token'
 import { useAdminPermissionsStore } from '../src/stores/adminPermissions'
-import { apiErrorText } from '../src/api/admin'
+import { pinia } from '../src/stores/pinia'
+import { apiErrorText, contentErrorText } from '../src/api/admin'
+import { ADMIN_MENUS, PERM, menuPermission } from '../src/constants/permissions'
+import { centsToYuanText, formatCents, isHttpsUrl, parseYuanToCents, priceText } from '../src/constants/content'
 import { ApiError } from '../src/api/http'
 import RolesView from '../src/views/system/RolesView.vue'
 import ConfigView from '../src/views/system/ConfigView.vue'
 import WhitelistView from '../src/views/devices/WhitelistView.vue'
 import AssetsView from '../src/views/assets/AssetsView.vue'
 import UsersView from '../src/views/users/UsersView.vue'
+import CoursesView from '../src/views/content/CoursesView.vue'
+import GoodsView from '../src/views/content/GoodsView.vue'
 
 /* ------------------------------------------------------------------ *
  * mock fetch
@@ -166,6 +171,40 @@ function inputByLabel(label: string, root: ParentNode = document.body): HTMLInpu
   const item = items.find((it) => ((it.querySelector('.el-form-item__label')?.textContent ?? '').trim()).startsWith(label))
   if (!item) return null
   return item.querySelector('input, textarea') as HTMLInputElement | null
+}
+
+/** 在标签输入框里回车提交（TagListInput 的提交方式之一）。 */
+function pressEnter(input: HTMLElement): void {
+  input.dispatchEvent(new (globalThis as any).KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+}
+
+/** 按文本定位表格行，避免 clickText 在全文档范围误命中状态标签。 */
+function rowByText(needle: string, root: ParentNode = document.body): Element | undefined {
+  return Array.from(root.querySelectorAll('.el-table__row')).find((row) => text(row).includes(needle))
+}
+
+/** 行内按钮（编辑 / 上架 / 下架 / 删除）。 */
+function rowButton(row: Element | undefined, needle: string): HTMLButtonElement | undefined {
+  if (!row) return undefined
+  return Array.from(row.querySelectorAll('.el-button')).find((btn) =>
+    (btn.textContent ?? '').replace(/\s+/g, '').includes(needle),
+  ) as HTMLButtonElement | undefined
+}
+
+/** 点击对话框里的单选（上架 / 下架），clickText 的候选选择器不含 .el-radio。 */
+function clickRadio(label: string, root: ParentNode): boolean {
+  const radios = Array.from(root.querySelectorAll('.el-radio')) as HTMLElement[]
+  const target = radios.find((radio) => (radio.textContent ?? '').replace(/\s+/g, '').includes(label))
+  const input = target?.querySelector('input') as HTMLInputElement | null | undefined
+  if (!input) return false
+  input.click()
+  return true
+}
+
+/** 表格某一行的单元格文本（用于校验排序列等具体列值）。 */
+function cellsOf(row: Element | undefined): string[] {
+  if (!row) return []
+  return Array.from(row.querySelectorAll('td')).map((cell) => text(cell).trim())
 }
 
 /* ------------------------------------------------------------------ *
@@ -736,6 +775,512 @@ async function checkRobustness(): Promise<void> {
   resetDom()
 }
 
+/* ------------------------------------------------------------------ *
+ * 教程课程 / 商品（本期新增页面）
+ * ------------------------------------------------------------------ */
+
+const COURSE_LIST = [
+  {
+    courseId: 'wrist-warmup-01',
+    title: '腕部热身 5 分钟',
+    summary: '起床后唤醒腕部',
+    coverUrl: 'https://cos.example.com/courses/c1.png',
+    videoUrl: 'https://cos.example.com/courses/c1.mp4',
+    durationLabel: '5 分钟',
+    level: 'beginner',
+    tags: ['腕部协调', '热身'],
+    status: 'on',
+    sort: 1,
+  },
+  {
+    courseId: 'grip-basic-02',
+    title: '握力基础训练',
+    summary: '',
+    coverUrl: '',
+    videoUrl: '',
+    durationLabel: '',
+    level: '',
+    tags: [],
+    status: 'off',
+    sort: 9,
+  },
+]
+
+const GOODS_LIST = [
+  {
+    goodsId: 'wrist-band-pro',
+    name: '智能挥腕环 Pro',
+    summary: '专业版挥腕环',
+    priceCents: 19900,
+    priceLabel: '¥199.00',
+    coverUrl: 'https://cos.example.com/goods/g1.png',
+    detailUrl: 'https://shop.example.com/g1',
+    specs: ['海蓝', 'M 码'],
+    status: 'on',
+    sort: 1,
+  },
+  {
+    goodsId: 'grip-ball',
+    name: '握力球',
+    summary: '',
+    priceCents: 1234,
+    priceLabel: '',
+    coverUrl: '',
+    detailUrl: '',
+    specs: [],
+    status: 'off',
+    sort: 2,
+  },
+]
+
+async function checkContentHelpers(): Promise<void> {
+  console.log('\n[10] 内容页纯函数：元/分整数换算、价格文案、https 校验')
+  check('19.90 元 → 1990 分（整数运算，无浮点误差）', parseYuanToCents('19.90') === 1990)
+  check('19.9 元 → 1990 分', parseYuanToCents('19.9') === 1990)
+  check('0.07 元 → 7 分', parseYuanToCents('0.07') === 7)
+  check('1.1 元 → 110 分', parseYuanToCents('1.1') === 110)
+  check('三位小数被拒绝', parseYuanToCents('1.999') === null)
+  check('非数字被拒绝', parseYuanToCents('abc') === null)
+  check('空串被拒绝', parseYuanToCents('   ') === null)
+  check('分 → 回填文案 1990 → "19.90"', centsToYuanText(1990) === '19.90')
+  check('分 → 展示文案 1234 → "¥12.34"', formatCents(1234) === '¥12.34')
+  check('分缺失时价格为「—」', formatCents(null) === '—')
+  check('priceLabel 优先展示', priceText('¥199.00', 1000) === '¥199.00')
+  check('priceLabel 为空时按分换算', priceText('', 1000) === '¥10.00')
+  check(
+    'isHttpsUrl 只接受 https',
+    isHttpsUrl('https://cos.example.com/a.png') && !isHttpsUrl('http://cos.example.com/a.png') && !isHttpsUrl(''),
+  )
+  check('contentErrorText 对 403 给出「没有权限」提示', contentErrorText(new ApiError(403, '')).includes('没有内容管理权限'))
+  check('contentErrorText 对 404 提示后端未就绪', contentErrorText(new ApiError(404, '')).includes('尚未上线'))
+}
+
+async function checkContentPermissions(): Promise<void> {
+  console.log('\n[11] 内容页权限：菜单与路由 meta.permission 均以 content:read 为准')
+  check('课程菜单权限含 content:read', menuPermission('/content/courses').includes(PERM.contentRead))
+  check('商品菜单权限含 content:read', menuPermission('/content/goods').includes(PERM.contentRead))
+  check('菜单表新增 2 个内容页', ADMIN_MENUS.filter((menu) => menu.path.startsWith('/content/')).length === 2)
+
+  handler = (ctx) => {
+    if (ctx.path === '/admin/me/permissions') return ok({ roles: ['operator'], permissions: ['content:read'] })
+    if (ctx.path === '/admin/courses') return ok({ items: [] })
+    if (ctx.path === '/admin/goods') return ok({ items: [] })
+    return fail(404, 'not mocked')
+  }
+  adminToken.set('smoke-token')
+  const { router } = await import('../src/router')
+  // 路由守卫读的是共享 pinia 实例上的权限 store，这里先重置再按 content:read 重新加载
+  const perms = useAdminPermissionsStore(pinia)
+  perms.reset()
+  await perms.load()
+  check('权限 store 已加载 content:read', perms.can(PERM.contentRead))
+
+  await router.push('/content/courses')
+  await flush(12)
+  check('有 content:read 可进入 /content/courses', router.currentRoute.value.path === '/content/courses')
+
+  await router.push('/content/goods')
+  await flush(12)
+  check('有 content:read 可进入 /content/goods', router.currentRoute.value.path === '/content/goods')
+
+  // 挂载真实布局，验证菜单按 content:read 显隐
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const app = createApp({ render: () => h(RouterView) })
+  app.use(createPinia())
+  app.use(router)
+  app.use(ElementPlus)
+  app.mount(container)
+  mounted.push(app)
+  await flush(14)
+  const menuText = text(container.querySelector('.menu') ?? container)
+  check('菜单显示「教程课程」', menuText.includes('教程课程'))
+  check('菜单显示「商品管理」', menuText.includes('商品管理'))
+  check('菜单隐藏无权限的「游戏目录」', !menuText.includes('游戏目录'))
+
+  await router.push('/games')
+  await flush(12)
+  check('无 game 权限时其他受控页仍跳 /forbidden', router.currentRoute.value.path === '/forbidden')
+  adminToken.clear()
+}
+
+async function checkCoursesView(): Promise<void> {
+  console.log('\n[12] 教程课程页：列表渲染 / URL 校验 / 上下架 / 删除')
+  resetDom()
+  let created: any = null
+  const patches: Array<{ path: string; body: any }> = []
+  const deletes: string[] = []
+  handler = (ctx) => {
+    if (ctx.path === '/admin/courses' && ctx.method === 'GET') return ok({ items: COURSE_LIST })
+    if (ctx.path === '/admin/courses' && ctx.method === 'POST') {
+      created = ctx.body
+      return ok({ item: { ...ctx.body, status: ctx.body?.status ?? 'off', sort: ctx.body?.sort ?? 0 } })
+    }
+    if (ctx.method === 'PATCH' && ctx.path.includes('/status')) {
+      patches.push({ path: ctx.path, body: ctx.body })
+      return ok({ item: {} })
+    }
+    if (ctx.method === 'DELETE') {
+      deletes.push(ctx.path)
+      return ok({ deleted: true })
+    }
+    return fail(404, 'not mocked')
+  }
+  const container = await mountView(CoursesView)
+  await flush(12)
+  const body = text(container)
+  check('渲染课程标题', body.includes('腕部热身 5 分钟'))
+  check('渲染简介', body.includes('起床后唤醒腕部'))
+  check('渲染时长文案', body.includes('5 分钟'))
+  check('难度英文码翻译为中文（beginner → 入门）', body.includes('入门'))
+  check('渲染标签', body.includes('腕部协调'))
+  check('渲染上架/下架状态标签', body.includes('已上架') && body.includes('已下架'))
+  check('空字段展示「—」而非空白/NaN', text(rowByText('握力基础训练') ?? container).includes('—'))
+
+  const offCourseRow = rowByText('握力基础训练')
+  check('排序列展示后端 sort 值', cellsOf(offCourseRow).includes('9'), JSON.stringify(cellsOf(offCourseRow)))
+
+  check('点击新增课程', clickText('＋ 新增课程', container))
+  await flush()
+  const dialog = document.querySelector('.el-dialog') as HTMLElement | null
+  check('新增对话框打开', dialog !== null)
+  if (!dialog) return
+
+  const idInput = inputByLabel('课程 ID', dialog) as HTMLInputElement | null
+  const titleInput = inputByLabel('标题', dialog) as HTMLInputElement | null
+  check('找到课程 ID / 标题输入框', idInput !== null && titleInput !== null)
+  if (!idInput || !titleInput) return
+  setInput(idInput, 'balance-pro-03')
+  setInput(titleInput, '平衡进阶训练')
+  await flush()
+
+  // 封面地址填 http://（后台不做上传，只接受 https://）→ 校验拦住且不提交
+  const coverInput = inputByLabel('封面地址', dialog) as HTMLInputElement | null
+  check('找到封面地址输入框', coverInput !== null)
+  if (coverInput) setInput(coverInput, 'http://cos.example.com/courses/c3.png')
+  await flush()
+  calls.length = 0
+  check('点击确认新增（http:// 地址）', clickText('确认新增', dialog))
+  await flush(12)
+  check('非 https 地址给出中文提示', text(dialog).includes('需以 https:// 开头'), text(dialog).slice(-200))
+  check('校验失败时未提交', findCall('POST', '/admin/courses') === undefined)
+  if (coverInput) setInput(coverInput, ' https://cos.example.com/courses/c3.png ')
+  await flush()
+
+  // 标签：点击添加 → 输入 → 回车（TagListInput）
+  check('点击添加标签', clickText('＋ 添加标签', dialog))
+  await flush()
+  const tagInput = inputByLabel('标签', dialog) as HTMLInputElement | null
+  check('标签输入框出现', tagInput !== null)
+  if (tagInput) {
+    setInput(tagInput, '平衡')
+    pressEnter(tagInput)
+  }
+  await flush()
+  check('标签以可删除的 tag 呈现', text(dialog).includes('平衡'))
+
+  check('对话框内选择「上架」', clickRadio('上架', dialog))
+  await flush()
+  const sortInput = inputByLabel('排序', dialog) as HTMLInputElement | null
+  if (sortInput) setInput(sortInput, '3')
+  await flush()
+
+  check('点击确认新增（字段合法）', clickText('确认新增', dialog))
+  await flush(12)
+  check('POST /admin/courses 已发出', findCall('POST', '/admin/courses') !== undefined)
+  check(
+    '提交载荷字段与契约一致',
+    created?.courseId === 'balance-pro-03' &&
+      created?.title === '平衡进阶训练' &&
+      created?.coverUrl === 'https://cos.example.com/courses/c3.png' &&
+      Array.isArray(created?.tags) &&
+      created.tags.includes('平衡') &&
+      created?.status === 'on' &&
+      Number.isInteger(created?.sort),
+    JSON.stringify(created),
+  )
+  check('URL 提交前已 trim', created?.coverUrl === 'https://cos.example.com/courses/c3.png', String(created?.coverUrl))
+
+  // 上架 → 下架：二次确认 + PATCH
+  const onRow = rowByText('腕部热身 5 分钟')
+  const offBtn = rowButton(onRow, '下架')
+  check('找到行内「下架」按钮', offBtn !== undefined)
+  offBtn?.click()
+  await flush()
+  check('下架二次确认弹窗出现', document.querySelector('.el-message-box') !== null)
+  const confirmBtn = document.querySelector('.el-message-box__btns .el-button--primary') as HTMLButtonElement | null
+  confirmBtn?.click()
+  await flush(12)
+  check(
+    'PATCH /admin/courses/wrist-warmup-01/status 载荷 status=off',
+    patches.some((p) => p.path === '/admin/courses/wrist-warmup-01/status' && p.body?.status === 'off'),
+    JSON.stringify(patches),
+  )
+
+  // 下架 → 上架：无需确认，直接 PATCH
+  resetDom()
+  handler = (ctx) => {
+    if (ctx.path === '/admin/courses' && ctx.method === 'GET') return ok({ items: COURSE_LIST })
+    if (ctx.method === 'PATCH' && ctx.path.includes('/status')) {
+      patches.push({ path: ctx.path, body: ctx.body })
+      return ok({ item: {} })
+    }
+    if (ctx.method === 'DELETE') {
+      deletes.push(ctx.path)
+      return ok({ deleted: true })
+    }
+    return fail(404, 'not mocked')
+  }
+  const container2 = await mountView(CoursesView)
+  await flush(12)
+  rowButton(rowByText('握力基础训练'), '上架')?.click()
+  await flush(12)
+  check(
+    '未上架课程点击「上架」直接 PATCH status=on',
+    patches.some((p) => p.path === '/admin/courses/grip-basic-02/status' && p.body?.status === 'on'),
+    JSON.stringify(patches),
+  )
+
+  rowButton(rowByText('握力基础训练'), '删除')?.click()
+  await flush()
+  check('删除二次确认弹窗出现', document.querySelector('.el-message-box') !== null)
+  ;(document.querySelector('.el-message-box__btns .el-button--primary') as HTMLButtonElement | null)?.click()
+  await flush(12)
+  check('DELETE /admin/courses/grip-basic-02 已发出', deletes.some((d) => d.includes('/admin/courses/grip-basic-02')), JSON.stringify(deletes))
+
+  // 编辑：回填 + PUT
+  resetDom()
+  let updated: any = null
+  const putPaths: string[] = []
+  handler = (ctx) => {
+    if (ctx.path === '/admin/courses' && ctx.method === 'GET') return ok({ items: COURSE_LIST })
+    if (ctx.method === 'PUT') {
+      updated = ctx.body
+      putPaths.push(ctx.path)
+      return ok({ item: ctx.body })
+    }
+    return fail(404, 'not mocked')
+  }
+  const container3 = await mountView(CoursesView)
+  await flush(12)
+  rowButton(rowByText('腕部热身 5 分钟'), '编辑')?.click()
+  await flush()
+  const editDialog = document.querySelector('.el-dialog') as HTMLElement | null
+  check('编辑对话框打开', editDialog !== null)
+  if (editDialog) {
+    check('编辑时课程 ID 只读（upsert 唯一标识）', (inputByLabel('课程 ID', editDialog) as HTMLInputElement | null)?.disabled === true)
+    check('编辑时回填标签', text(editDialog).includes('腕部协调'))
+    const editTitle = inputByLabel('标题', editDialog) as HTMLInputElement | null
+    if (editTitle) setInput(editTitle, '腕部热身 6 分钟')
+    await flush()
+    check('点击保存修改', clickText('保存修改', editDialog))
+    await flush(12)
+    check('PUT /admin/courses/wrist-warmup-01 已发出', putPaths.some((p) => p.includes('/admin/courses/wrist-warmup-01')), JSON.stringify(putPaths))
+    check('编辑提交标题已更新', updated?.title === '腕部热身 6 分钟', JSON.stringify(updated))
+  }
+}
+
+async function checkGoodsView(): Promise<void> {
+  console.log('\n[13] 商品页：价格元→分换算 / 规格拆分 / 上下架 / 删除')
+  resetDom()
+  let created: any = null
+  const patches: Array<{ path: string; body: any }> = []
+  const deletes: string[] = []
+  handler = (ctx) => {
+    if (ctx.path === '/admin/goods' && ctx.method === 'GET') return ok({ items: GOODS_LIST })
+    if (ctx.path === '/admin/goods' && ctx.method === 'POST') {
+      created = ctx.body
+      return ok({ item: { ...ctx.body, status: ctx.body?.status ?? 'off' } })
+    }
+    if (ctx.method === 'PATCH' && ctx.path.includes('/status')) {
+      patches.push({ path: ctx.path, body: ctx.body })
+      return ok({ item: {} })
+    }
+    if (ctx.method === 'DELETE') {
+      deletes.push(ctx.path)
+      return ok({ deleted: true })
+    }
+    return fail(404, 'not mocked')
+  }
+  const container = await mountView(GoodsView)
+  await flush(12)
+  const body = text(container)
+  check('渲染商品名', body.includes('智能挥腕环 Pro'))
+  check('价格优先用后端 priceLabel', body.includes('¥199.00'))
+  check('priceLabel 为空时由 priceCents 换算 1234 → ¥12.34', body.includes('¥12.34'))
+  check('渲染规格标签', body.includes('海蓝') && body.includes('M 码'))
+  check('渲染上架/下架状态标签', body.includes('已上架') && body.includes('已下架'))
+  const offGoodsRow = rowByText('握力球')
+  check('排序列展示后端 sort 值', cellsOf(offGoodsRow).includes('2'), JSON.stringify(cellsOf(offGoodsRow)))
+
+  check('点击新增商品', clickText('＋ 新增商品', container))
+  await flush()
+  const dialog = document.querySelector('.el-dialog') as HTMLElement | null
+  check('新增对话框打开', dialog !== null)
+  if (!dialog) return
+
+  const idInput = inputByLabel('商品 ID', dialog) as HTMLInputElement | null
+  const nameInput = inputByLabel('商品名称', dialog) as HTMLInputElement | null
+  const priceInput = inputByLabel('价格（元）', dialog) as HTMLInputElement | null
+  check('找到商品 ID / 名称 / 价格输入框', idInput !== null && nameInput !== null && priceInput !== null)
+  if (!idInput || !nameInput || !priceInput) return
+  setInput(idInput, 'grip-ball-lite')
+  setInput(nameInput, '握力球 Lite')
+  await flush()
+
+  // 三位小数 → 校验拦住，不提交
+  setInput(priceInput, '19.999')
+  await flush()
+  calls.length = 0
+  check('点击确认新增（19.999 元）', clickText('确认新增', dialog))
+  await flush(12)
+  check('价格格式错误给出中文提示', text(dialog).includes('最多两位小数'), text(dialog).slice(-200))
+  check('价格非法时未提交', findCall('POST', '/admin/goods') === undefined)
+
+  // 合法价格：19.90 元 → 1990 分
+  setInput(priceInput, '19.90')
+  await flush()
+  check('价格换算实时预览为「1990 分」', text(dialog).includes('1990 分'), text(dialog).slice(-200))
+
+  // 详情地址 http:// → 拦住
+  const detailInput = inputByLabel('详情地址', dialog) as HTMLInputElement | null
+  check('找到详情地址输入框', detailInput !== null)
+  if (detailInput) setInput(detailInput, 'http://shop.example.com/g2')
+  await flush()
+  calls.length = 0
+  check('点击确认新增（http:// 详情地址）', clickText('确认新增', dialog))
+  await flush(12)
+  check('详情地址非 https 给出中文提示', text(dialog).includes('需以 https:// 开头'), text(dialog).slice(-200))
+  check('URL 非法时未提交', findCall('POST', '/admin/goods') === undefined)
+  if (detailInput) setInput(detailInput, 'https://shop.example.com/g2')
+  await flush()
+
+  // 规格：粘贴多行文本 → 按行拆分
+  check('点击添加规格', clickText('＋ 添加规格', dialog))
+  await flush()
+  const specInput = inputByLabel('规格', dialog) as HTMLInputElement | null
+  check('规格输入框出现', specInput !== null)
+  if (specInput) {
+    setInput(specInput, '红色，L 码')
+    pressEnter(specInput)
+  }
+  await flush()
+  check('规格按逗号拆分并可删除', text(dialog).includes('红色') && text(dialog).includes('L 码'))
+
+  check('对话框内选择「上架」', clickRadio('上架', dialog))
+  await flush()
+  check('点击确认新增（字段合法）', clickText('确认新增', dialog))
+  await flush(12)
+  check('POST /admin/goods 已发出', findCall('POST', '/admin/goods') !== undefined)
+  check(
+    'priceCents 为整数 1990（元→分无浮点误差）',
+    created?.priceCents === 1990 && Number.isInteger(created?.priceCents),
+    JSON.stringify(created),
+  )
+  check(
+    '提交载荷字段与契约一致',
+    created?.goodsId === 'grip-ball-lite' &&
+      created?.name === '握力球 Lite' &&
+      created?.detailUrl === 'https://shop.example.com/g2' &&
+      Array.isArray(created?.specs) &&
+      created.specs.join(',') === '红色,L 码' &&
+      created?.status === 'on',
+    JSON.stringify(created),
+  )
+
+  // 编辑：价格由分回填成元
+  resetDom()
+  let updated: any = null
+  const putPaths: string[] = []
+  handler = (ctx) => {
+    if (ctx.path === '/admin/goods' && ctx.method === 'GET') return ok({ items: GOODS_LIST })
+    if (ctx.method === 'PUT') {
+      updated = ctx.body
+      putPaths.push(ctx.path)
+      return ok({ item: ctx.body })
+    }
+    return fail(404, 'not mocked')
+  }
+  const container2 = await mountView(GoodsView)
+  await flush(12)
+  rowButton(rowByText('智能挥腕环 Pro'), '编辑')?.click()
+  await flush()
+  const editDialog = document.querySelector('.el-dialog') as HTMLElement | null
+  check('编辑对话框打开', editDialog !== null)
+  if (editDialog) {
+    check('编辑时商品 ID 只读', (inputByLabel('商品 ID', editDialog) as HTMLInputElement | null)?.disabled === true)
+    check('价格由分回填为元（19900 分 → 199.00）', (inputByLabel('价格（元）', editDialog) as HTMLInputElement | null)?.value === '199.00')
+    check('编辑时回填规格', text(editDialog).includes('海蓝'))
+    check('点击保存修改（未改价格）', clickText('保存修改', editDialog))
+    await flush(12)
+    check('PUT /admin/goods/wrist-band-pro 已发出', putPaths.some((p) => p.includes('/admin/goods/wrist-band-pro')), JSON.stringify(putPaths))
+    check('未改价格时金额不变（仍是 19900 分）', updated?.priceCents === 19900, JSON.stringify(updated))
+  }
+
+  // 上架/下架 + 删除
+  resetDom()
+  handler = (ctx) => {
+    if (ctx.path === '/admin/goods' && ctx.method === 'GET') return ok({ items: GOODS_LIST })
+    if (ctx.method === 'PATCH' && ctx.path.includes('/status')) {
+      patches.push({ path: ctx.path, body: ctx.body })
+      return ok({ item: {} })
+    }
+    if (ctx.method === 'DELETE') {
+      deletes.push(ctx.path)
+      return ok({ deleted: true })
+    }
+    return fail(404, 'not mocked')
+  }
+  const container3 = await mountView(GoodsView)
+  await flush(12)
+  rowButton(rowByText('智能挥腕环 Pro'), '下架')?.click()
+  await flush()
+  check('下架二次确认弹窗出现', document.querySelector('.el-message-box') !== null)
+  ;(document.querySelector('.el-message-box__btns .el-button--primary') as HTMLButtonElement | null)?.click()
+  await flush(12)
+  check(
+    'PATCH /admin/goods/wrist-band-pro/status 载荷 status=off',
+    patches.some((p) => p.path === '/admin/goods/wrist-band-pro/status' && p.body?.status === 'off'),
+    JSON.stringify(patches),
+  )
+  rowButton(rowByText('握力球'), '删除')?.click()
+  await flush()
+  ;(document.querySelector('.el-message-box__btns .el-button--primary') as HTMLButtonElement | null)?.click()
+  await flush(12)
+  check('DELETE /admin/goods/grip-ball 已发出', deletes.some((d) => d.includes('/admin/goods/grip-ball')), JSON.stringify(deletes))
+}
+
+async function checkContentRobustness(): Promise<void> {
+  console.log('\n[14] 内容页异常兜底：403 提示、后端未就绪、空态不白屏')
+  resetDom()
+  handler = () => fail(403, '当前账号无权查看课程')
+  const container = await mountView(CoursesView)
+  await flush(12)
+  check('课程 403 时弹出错误提示', text(document.body).includes('无权查看课程'), text(document.body).slice(-200))
+  check('课程 403 时页面仍渲染（无白屏）', text(container).includes('＋ 新增课程'))
+  check('课程 403 时展示空态文案', text(container).includes('课程列表加载失败'))
+
+  resetDom()
+  handler = () => {
+    throw new Error('network down')
+  }
+  const goodsContainer = await mountView(GoodsView)
+  await flush(12)
+  check('后端未就绪时商品页提示连接失败', text(document.body).includes('无法连接后端服务'), text(document.body).slice(-200))
+  check('后端未就绪时商品页仍渲染（无白屏）', text(goodsContainer).includes('＋ 新增商品'))
+  check('后端未就绪时商品页展示空态文案', text(goodsContainer).includes('商品列表加载失败'))
+
+  resetDom()
+  handler = (ctx) => {
+    if (ctx.path === '/admin/courses' && ctx.method === 'GET') return ok({ items: [] })
+    return ok({})
+  }
+  const emptyContainer = await mountView(CoursesView)
+  await flush(12)
+  check('列表为空时给出友好空态', text(emptyContainer).includes('暂无课程'))
+  resetDom()
+}
+
 /* ------------------------------------------------------------------ */
 
 it('管理后台新增页面冒烟：渲染 / 交互 / 请求载荷', async () => {
@@ -750,6 +1295,11 @@ it('管理后台新增页面冒烟：渲染 / 交互 / 请求载荷', async () =
   await checkUsersView()
   await checkWhitelistView()
   await checkRobustness()
+  await checkContentHelpers()
+  await checkContentPermissions()
+  await checkCoursesView()
+  await checkGoodsView()
+  await checkContentRobustness()
 
   console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`)
   if (failures.length) {

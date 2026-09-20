@@ -23,6 +23,8 @@ export const PERM = {
   whitelistWrite: 'whitelist:write',
   assetRead: 'asset:read',
   assetWrite: 'asset:write',
+  contentRead: 'content:read',
+  contentWrite: 'content:write',
 } as const
 
 /** 菜单（与 router.ts 的 meta.permission 保持一致）。permission 为空表示登录即可见。 */
@@ -60,6 +62,19 @@ export const ADMIN_MENUS: AdminMenu[] = [
     label: '游戏目录',
     icon: '🎯',
     permission: [PERM.gameRead, 'game:write', 'game:manage'],
+  },
+  {
+    path: '/content/courses',
+    label: '教程课程',
+    icon: '📚',
+    // 菜单可见性以 content:read 为准（后端另有 content:write 控制写操作）
+    permission: [PERM.contentRead, PERM.contentWrite, 'course:read', 'content:manage'],
+  },
+  {
+    path: '/content/goods',
+    label: '商品管理',
+    icon: '🛍️',
+    permission: [PERM.contentRead, PERM.contentWrite, 'goods:read', 'content:manage'],
   },
   {
     path: '/assets',

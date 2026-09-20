@@ -206,6 +206,107 @@ func TestAdminContentPermissionEnforcement(t *testing.T) {
 	}
 }
 
+// TestContentCreateWithMinimalBody 回归用例（端到端复核报的「省略可选字段就 400」）：
+// 契约里只有 title(课程)/name(商品) 必填，其余字段省略必须能建成功，且省略的可选字段
+// 落成空值（数组为空数组而不是 null），status 按传入值生效（不是被默认 off 覆盖）。
+func TestContentCreateWithMinimalBody(t *testing.T) {
+	env := newRBACTestEnv(t, "")
+	adminToken, _ := env.newUserWithRoles(t, "13800014301", "admin")
+
+	// 只填必填 + status=off（复核方原始 body）
+	code, res := doJSON(t, env.engine, http.MethodPost, "/api/v1/admin/courses", adminToken,
+		map[string]any{"courseId": "course-off", "title": "未上架课程", "status": "off", "sort": 2})
+	if code != http.StatusOK {
+		t.Fatalf("只填必填字段的课程创建应 200，实际 %d（%s）", code, res.Message)
+	}
+	createdOff := decode[struct {
+		Item model.Course `json:"item"`
+	}](t, res.Data)
+	if createdOff.Item.CourseID != "course-off" || createdOff.Item.Status != "off" || createdOff.Item.Sort != 2 {
+		t.Fatalf("课程创建返回异常: %+v", createdOff.Item)
+	}
+	if createdOff.Item.Summary != "" || createdOff.Item.CoverURL != "" || createdOff.Item.VideoURL != "" ||
+		createdOff.Item.DurationLabel != "" || createdOff.Item.Level != "" {
+		t.Fatalf("省略的可选字段应为空串: %+v", createdOff.Item)
+	}
+	if createdOff.Item.Tags == nil || len(createdOff.Item.Tags) != 0 {
+		t.Fatalf("省略的 tags 应为空数组: %+v", createdOff.Item.Tags)
+	}
+
+	// 只填必填 + status=on：状态必须按传入值生效（不能反成 off）
+	code, res = doJSON(t, env.engine, http.MethodPost, "/api/v1/admin/courses", adminToken,
+		map[string]any{"courseId": "course-on", "title": "上架课程", "status": "on", "sort": 1})
+	if code != http.StatusOK {
+		t.Fatalf("只填必填字段的课程创建应 200，实际 %d（%s）", code, res.Message)
+	}
+	if got := decode[struct {
+		Item model.Course `json:"item"`
+	}](t, res.Data); got.Item.Status != "on" {
+		t.Fatalf("创建时 status:on 必须生效，实际 %q", got.Item.Status)
+	}
+
+	// 商品：同样只填必填
+	code, res = doJSON(t, env.engine, http.MethodPost, "/api/v1/admin/goods", adminToken,
+		map[string]any{"goodsId": "goods-off", "name": "未上架商品", "status": "off", "sort": 2})
+	if code != http.StatusOK {
+		t.Fatalf("只填必填字段的商品创建应 200，实际 %d（%s）", code, res.Message)
+	}
+	goodsOff := decode[struct {
+		Item model.MallGoods `json:"item"`
+	}](t, res.Data)
+	if goodsOff.Item.GoodsID != "goods-off" || goodsOff.Item.Status != "off" || goodsOff.Item.PriceCents != 0 ||
+		goodsOff.Item.Summary != "" || goodsOff.Item.PriceLabel != "" || goodsOff.Item.DetailURL != "" {
+		t.Fatalf("商品创建返回异常: %+v", goodsOff.Item)
+	}
+	if goodsOff.Item.Specs == nil || len(goodsOff.Item.Specs) != 0 {
+		t.Fatalf("省略的 specs 应为空数组: %+v", goodsOff.Item.Specs)
+	}
+	code, res = doJSON(t, env.engine, http.MethodPost, "/api/v1/admin/goods", adminToken,
+		map[string]any{"goodsId": "goods-on", "name": "上架商品", "status": "on", "sort": 1})
+	if code != http.StatusOK {
+		t.Fatalf("只填必填字段的商品创建应 200，实际 %d（%s）", code, res.Message)
+	}
+
+	// 公开接口只返回 on（各 1 条），后台含 off（各 2 条）——状态写入方向必须正确
+	publicCourses := decode[[]map[string]any](t, mustGet(t, env.engine, "/api/v1/catalog/courses"))
+	if len(publicCourses) != 1 || publicCourses[0]["courseId"] != "course-on" {
+		t.Fatalf("公开课程应只含 1 条 on: %+v", publicCourses)
+	}
+	publicGoods := decode[[]map[string]any](t, mustGet(t, env.engine, "/api/v1/catalog/goods"))
+	if len(publicGoods) != 1 || publicGoods[0]["goodsId"] != "goods-on" {
+		t.Fatalf("公开商品应只含 1 条 on: %+v", publicGoods)
+	}
+	adminList := decode[struct {
+		Items []map[string]any `json:"items"`
+	}](t, mustGetAuth(t, env.engine, "/api/v1/admin/courses", adminToken))
+	if len(adminList.Items) != 2 {
+		t.Fatalf("后台课程列表应含 off 共 2 条: %+v", adminList.Items)
+	}
+
+	// PATCH 上下架方向：on → off 后公开列表减少，再 on 恢复
+	if code, res = doJSON(t, env.engine, http.MethodPatch, "/api/v1/admin/courses/course-on/status", adminToken,
+		map[string]any{"status": "off"}); code != http.StatusOK {
+		t.Fatalf("下架失败: %d %s", code, res.Message)
+	}
+	if public := decode[[]map[string]any](t, mustGet(t, env.engine, "/api/v1/catalog/courses")); len(public) != 0 {
+		t.Fatalf("下架后公开课程应为 0 条: %+v", public)
+	}
+	if code, _ = doJSON(t, env.engine, http.MethodPatch, "/api/v1/admin/courses/course-on/status", adminToken,
+		map[string]any{"status": "on"}); code != http.StatusOK {
+		t.Fatalf("重新上架失败: %d", code)
+	}
+	if public := decode[[]map[string]any](t, mustGet(t, env.engine, "/api/v1/catalog/courses")); len(public) != 1 {
+		t.Fatalf("重新上架后公开课程应为 1 条: %+v", public)
+	}
+	if code, _ = doJSON(t, env.engine, http.MethodPatch, "/api/v1/admin/goods/goods-on/status", adminToken,
+		map[string]any{"status": "off"}); code != http.StatusOK {
+		t.Fatalf("商品下架失败: %d", code)
+	}
+	if public := decode[[]map[string]any](t, mustGet(t, env.engine, "/api/v1/catalog/goods")); len(public) != 0 {
+		t.Fatalf("商品下架后公开应为 0 条: %+v", public)
+	}
+}
+
 // TestAdminContentValidationAndContract 参数校验（ID / status / 必填）与响应契约。
 func TestAdminContentValidationAndContract(t *testing.T) {
 	env := newRBACTestEnv(t, "")
@@ -295,8 +396,8 @@ func TestAdminContentValidationAndContract(t *testing.T) {
 		t.Fatalf("更新课程失败: %d %s", code, res.Message)
 	}
 	putItem := decode[struct {
-		Item     model.Course `json:"item"`
-		Deleted  *bool        `json:"deleted"`
+		Item    model.Course `json:"item"`
+		Deleted *bool        `json:"deleted"`
 	}](t, res.Data)
 	if putItem.Item.CourseID != "course-contract" || putItem.Item.Title != "契约课程（改）" ||
 		putItem.Item.Sort != 4 || putItem.Item.Status != "on" {

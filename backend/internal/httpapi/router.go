@@ -39,7 +39,10 @@ func NewEngine(deps Deps) *gin.Engine {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	engine := gin.New()
-	engine.Use(gin.Recovery(), RequestID(), SecurityHeaders())
+	// StripJSONBOM：只对小体积 JSON 请求体剥离 UTF-8 BOM（Windows 脚本常写出带 BOM 的 body，
+	// 否则会被 JSON 解析器拒绝、报成「参数格式不正确」）；非 JSON 与超过 1MiB 的请求体
+	// （如本地对象存储的 64MB 直传端点 PUT /api/v1/files/*key）完全不做读取或缓冲。
+	engine.Use(gin.Recovery(), RequestID(), SecurityHeaders(), StripJSONBOM())
 	if deps.Config.LogRequests {
 		engine.Use(AccessLog())
 	}

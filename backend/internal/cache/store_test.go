@@ -128,6 +128,134 @@ func TestRedisStoreAllowFixedWindow(t *testing.T) {
 	}
 }
 
+// TestDeletePrefixMemoryOnlyRemovesMatchingKeys 内存实现：前缀删除只清命中的键。
+//
+// 场景即生产事故：迁移直接写库授予了新权限，重启后必须能按 zwkl:rbac 前缀
+// 一次性清掉所有用户权限缓存，同时不能误伤其它命名空间（如设备映射）。
+func TestDeletePrefixMemoryOnlyRemovesMatchingKeys(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemory()
+
+	rbacKeys := []string{
+		Key("rbac", "user", "x"),
+		Key("rbac", "user", "y"),
+	}
+	otherKeys := []string{
+		Key("device", "mapping", "y"),
+		Key("session", "revoked", "z"),
+		Key("ratelimit", "login|ip"),
+	}
+	for _, key := range append(append([]string{}, rbacKeys...), otherKeys...) {
+		if err := store.Set(ctx, key, "v", time.Minute); err != nil {
+			t.Fatalf("Set(%s) 失败: %v", key, err)
+		}
+	}
+	// 限流计数也带上 rbac 前缀，确认 DeletePrefix 一并清理（避免残留旧计数）。
+	if _, err := store.Allow(ctx, Key("rbac", "user", "x"), time.Minute, 5); err != nil {
+		t.Fatalf("Allow 失败: %v", err)
+	}
+
+	if err := store.DeletePrefix(ctx, Key("rbac")); err != nil {
+		t.Fatalf("DeletePrefix 失败: %v", err)
+	}
+
+	for _, key := range rbacKeys {
+		if _, ok, _ := store.Get(ctx, key); ok {
+			t.Fatalf("rbac 键 %s 应被前缀删除", key)
+		}
+	}
+	for _, key := range otherKeys {
+		if _, ok, err := store.Get(ctx, key); err != nil || !ok {
+			t.Fatalf("无关键 %s 不应被删除（ok=%v err=%v）", key, ok, err)
+		}
+	}
+	// 前缀删除是幂等的：再删一次不报错，且无关键仍在。
+	if err := store.DeletePrefix(ctx, Key("rbac")); err != nil {
+		t.Fatalf("重复 DeletePrefix 应成功: %v", err)
+	}
+	if _, ok, _ := store.Get(ctx, Key("device", "mapping", "y")); !ok {
+		t.Fatal("重复前缀删除不应影响无关键")
+	}
+	// 未命中任何键的前缀同样不报错。
+	if err := store.DeletePrefix(ctx, Key("not", "used")); err != nil {
+		t.Fatalf("空前缀匹配应成功: %v", err)
+	}
+	// 防呆：空前缀会清整个缓存，必须报错且不删任何键。
+	if err := store.DeletePrefix(ctx, ""); err == nil {
+		t.Fatal("空前缀应返回错误（防止误清整个缓存）")
+	}
+	if _, ok, _ := store.Get(ctx, Key("device", "mapping", "y")); !ok {
+		t.Fatal("空前缀报错后不应删除任何键")
+	}
+}
+
+// TestDeletePrefixRedisOnlyRemovesMatchingKeys Redis 实现：SCAN+DEL 语义与内存实现一致。
+func TestDeletePrefixRedisOnlyRemovesMatchingKeys(t *testing.T) {
+	ctx := context.Background()
+	store, server := newRedisStoreForTest(t)
+
+	rbacKeys := []string{
+		Key("rbac", "user", "x"),
+		Key("rbac", "user", "y"),
+	}
+	// 外加一批同前缀键，确保跨多轮 SCAN 游标也能全部清掉（批量 200 不足以一轮扫完）。
+	for i := 0; i < 250; i++ {
+		rbacKeys = append(rbacKeys, Key("rbac", "user", "bulk-"+string(rune('a'+i%26))+string(rune('0'+i%10))+string(rune('0'+i/10))))
+	}
+	otherKeys := []string{
+		Key("device", "mapping", "y"),
+		Key("session", "revoked", "z"),
+	}
+	for _, key := range append(append([]string{}, rbacKeys...), otherKeys...) {
+		if err := store.Set(ctx, key, "v", time.Minute); err != nil {
+			t.Fatalf("Set(%s) 失败: %v", key, err)
+		}
+	}
+
+	if err := store.DeletePrefix(ctx, Key("rbac")); err != nil {
+		t.Fatalf("DeletePrefix 失败: %v", err)
+	}
+
+	for _, key := range rbacKeys {
+		if _, ok, _ := store.Get(ctx, key); ok {
+			t.Fatalf("rbac 键 %s 应被前缀删除", key)
+		}
+	}
+	for _, key := range otherKeys {
+		if _, ok, err := store.Get(ctx, key); err != nil || !ok {
+			t.Fatalf("无关键 %s 不应被删除（ok=%v err=%v）", key, ok, err)
+		}
+	}
+	// 清理后 Redis 里不应再有 rbac 前缀键（用 SCAN 核对，不复用被测方法）。
+	cursor := uint64(0)
+	remaining := 0
+	for {
+		keys, next, err := store.Client().Scan(ctx, cursor, Key("rbac")+"*", 100).Result()
+		if err != nil {
+			t.Fatalf("SCAN 核对失败: %v", err)
+		}
+		remaining += len(keys)
+		if next == 0 {
+			break
+		}
+		cursor = next
+	}
+	if remaining != 0 {
+		t.Fatalf("清理后仍残留 %d 个 rbac 键", remaining)
+	}
+	// 既有键数量不受影响（确认没有误删）。
+	if server.Exists(Key("device", "mapping", "y")) != true {
+		t.Fatal("设备映射键应保留")
+	}
+	// 防呆：空前缀必须报错（否则会清掉整个 keyspace）。
+	if err := store.DeletePrefix(ctx, ""); err == nil {
+		t.Fatal("空前缀应返回错误")
+	}
+	if server.Exists(Key("device", "mapping", "y")) != true {
+		t.Fatal("空前缀报错后不应删除任何键")
+	}
+}
+
 func TestNewFallsBackToMemoryWhenRedisUnavailable(t *testing.T) {
 	ctx := context.Background()
 	// 端口 1 上不会有 Redis：应回退内存实现而不是报错。

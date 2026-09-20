@@ -26,6 +26,7 @@ import (
 	"zhiwellcare/backend/internal/config"
 	"zhiwellcare/backend/internal/httpapi"
 	"zhiwellcare/backend/internal/objectstore"
+	"zhiwellcare/backend/internal/rbac"
 	"zhiwellcare/backend/internal/store"
 	"zhiwellcare/backend/internal/wechat"
 )
@@ -45,6 +46,10 @@ func main() {
 
 	var data store.Combined
 	var pgStore *store.Postgres
+	// migrationsApplied 标记「本次启动是否在持久化库上执行过迁移」：
+	// 迁移（如 004 给 admin 补授 content:*）直接写库，绕过了应用写路径的缓存失效，
+	// 需要在本进程开始服务之前清一次权限缓存（见下方 purgeRBACCache）。
+	migrationsApplied := false
 	if cfg.DBURL != "" {
 		pgStore, err = store.NewPostgres(ctx, cfg.DBURL)
 		if err != nil {
@@ -54,6 +59,7 @@ func main() {
 		if err := pgStore.RunMigrations(ctx, "migrations"); err != nil {
 			log.Fatalf("[db] 迁移失败: %v", err)
 		}
+		migrationsApplied = true
 		data = pgStore
 		// 启动即打印「实际连到哪个库」（不含口令）：
 		// APP_DB_URL 被误清空、godotenv 从 .env 回填正式库这类事故可以一眼看见。
@@ -79,6 +85,18 @@ func main() {
 	sessions := cache.NewSessions(cacheStore)
 	devices := cache.NewDevices(cacheStore, cfg.DeviceCacheTTL)
 	slog.Info("缓存就绪", "backend", cacheStore.Kind())
+
+	// 权限缓存清理：必须在「迁移 + 启动引导」之后、开始服务之前。
+	//
+	// 迁移与 bootstrapAdmin 都是直接写库，不走分配角色/改角色权限那些会精确失效缓存的写路径；
+	// 而 Redis 开 AOF 时 zwkl:rbac:user:* 会跨重启存活，于是升级后（例如 004 给 admin 补授
+	// content:read/content:write）服务仍按旧的 15 个权限判定，管理员访问新接口会 403 直到 TTL 到期。
+	// 因此这里按前缀整体清一次；清理失败只告警，绝不阻断启动（缓存只是加速层，回源即可恢复）。
+	// 条件：本次启动确实写过 RBAC 相关数据 —— 持久化库启动（迁移已执行）或配置了管理员引导
+	// （bootstrapAdmin 会写 user_roles）；两者都会绕过写路径的缓存失效。
+	if migrationsApplied || cfg.AdminBootstrapPhone != "" {
+		purgeRBACCache(ctx, cacheStore)
+	}
 
 	// 对象存储：S3 优先，未配置或不可用时回退本地磁盘（客户端流程一致）。
 	assets, err := objectstore.New(ctx, objectstore.Options{
@@ -151,6 +169,24 @@ func isLocalDBHost(host string) bool {
 		return true
 	}
 	return false
+}
+
+// purgeRBACCache 启动时清理全部用户权限缓存（前缀 zwkl:rbac）。
+//
+// 只记日志、不阻断启动：清理失败时缓存仍在（可能短暂沿用旧权限集合），
+// 但迁移与 DB 已经就绪，管理员可通过重试或等 TTL（默认 5 分钟）自然收敛。
+func purgeRBACCache(ctx context.Context, cacheStore cache.Store) {
+	if cacheStore == nil {
+		return
+	}
+	purgeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := rbac.PurgeCache(purgeCtx, cacheStore); err != nil {
+		slog.Warn("权限缓存清理失败（不阻断启动；升级后的新权限可能要等 TTL 才会生效）",
+			"prefix", rbac.CachePrefix(), "backend", cacheStore.Kind(), "err", err)
+		return
+	}
+	slog.Info("权限缓存已清理", "prefix", rbac.CachePrefix(), "backend", cacheStore.Kind())
 }
 
 // bootstrapAdmin 启动时把指定手机号用户提升为管理员（RBAC 初始化；手机号可为空）。

@@ -57,6 +57,25 @@ func userKey(userID string) string {
 	return cache.Key("rbac", "user", userID)
 }
 
+// CachePrefix 返回权限缓存的键前缀（zwkl:rbac），供整体清理与运维排查使用。
+func CachePrefix() string {
+	return cache.Key("rbac")
+}
+
+// PurgeCache 清理**全部**用户权限缓存（前缀 zwkl:rbac）。
+//
+// 应用写路径（分配角色 / 改角色权限 / 删角色）已经会精确失效对应用户，
+// 但**迁移与启动引导是直接写库的**，绕过了这些失效逻辑；而 Redis 开启 AOF 时
+// 缓存会跨重启存活，于是升级后服务仍按旧的权限集合判定，新功能对管理员一直 403
+// 直到 TTL（默认 5 分钟）过期。因此启动时（迁移/bootstrap 之后、开始服务之前）
+// 需要按前缀整体清一次。
+func PurgeCache(ctx context.Context, cacheStore cache.Store) error {
+	if cacheStore == nil {
+		return nil
+	}
+	return cacheStore.DeletePrefix(ctx, CachePrefix())
+}
+
 // Resolve 解析用户角色与权限；未命中缓存时回源并写缓存。
 func (r *Resolver) Resolve(ctx context.Context, userID string) (*Set, error) {
 	if userID == "" {

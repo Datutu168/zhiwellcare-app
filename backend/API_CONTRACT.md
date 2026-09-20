@@ -24,14 +24,14 @@
 | PATCH | `/admin/games/:gameId/status` | body `{"status":"on"|"off"}` |
 | GET | `/admin/courses` | 课程列表（含 off）`data:{items:[…]}` |
 | POST | `/admin/courses` | 新建/更新课程（upsert）→ `data:{item}` |
-| PUT | `/admin/courses/:courseId` | 更新课程（以路径 ID 为准）→ `data:{deleted:true}` |
+| PUT | `/admin/courses/:courseId` | 更新课程（以路径 ID 为准）→ `data:{item}` |
 | DELETE | `/admin/courses/:courseId` | 删除课程 → `data:{deleted:true}` |
-| PATCH | `/admin/courses/:courseId/status` | body `{"status":"on"\|"off"}` |
+| PATCH | `/admin/courses/:courseId/status` | body `{"status":"on"\|"off"}` → `data:{status}` |
 | GET | `/admin/goods` | 商城商品列表（含 off）`data:{items:[…]}` |
 | POST | `/admin/goods` | 新建/更新商品（upsert）→ `data:{item}` |
-| PUT | `/admin/goods/:goodsId` | 更新商品（以路径 ID 为准）→ `data:{deleted:true}` |
+| PUT | `/admin/goods/:goodsId` | 更新商品（以路径 ID 为准）→ `data:{item}` |
 | DELETE | `/admin/goods/:goodsId` | 删除商品 → `data:{deleted:true}` |
-| PATCH | `/admin/goods/:goodsId/status` | body `{"status":"on"\|"off"}` |
+| PATCH | `/admin/goods/:goodsId/status` | body `{"status":"on"\|"off"}` → `data:{status}` |
 | GET | `/admin/users?keyword=&status=&page=&pageSize=` | 用户列表（status: -1 全部/0 禁用/1 正常）`data:{items,total}` |
 | PATCH | `/admin/users/:id/status` | body `{"status":0\|1}`（不可停用自己） |
 | GET | `/admin/training-records?page=&pageSize=&gameId=&modelId=` | 训练摘要 `data:{items,total}` |
@@ -224,9 +224,11 @@
    - `POST /admin/device-mappings` → 映射条目 `{deviceKey,modelId,note}`；
    - `PATCH /admin/assets/:id/status` → 更新后的资产记录。
 4. **`GET /admin/assets` 额外支持可选 `status` 过滤**（`?kind=&refId=&status=`），且响应只含 `items`（无 `total`/分页字段）。
-5. **内容中心（课程/商品）两处按「内容中心契约」字面实现，与仓库惯例不同，前端按此对接**：
+5. **内容中心（课程/商品）响应体，前端按此对接**：
    - `GET /admin/courses`、`GET /admin/goods` 返回 `data:{items:[…]}`（对象包 items，与 `/admin/assets`、`/admin/roles` 一致；**不是** `/admin/games` 那样的裸数组）；
-   - `PUT /admin/courses/:courseId`、`PUT /admin/goods/:goodsId` 与对应 DELETE 一样返回 `data:{deleted:true}`（契约原文如此；更新是否生效请以随后 GET 为准）；
+   - `POST`（upsert）与 `PUT`（按路径 ID 更新）都返回 `data:{item}`（写入后的对象，与 `POST /admin/roles` 返回 `{role}` 同风格）；`data:{deleted:true}` **只属于 DELETE**；
+   - `PATCH …/status` 返回 `data:{status}`（沿用 `/admin/games/:gameId/status` 的既有形状）；
    - 公开接口 `GET /catalog/courses`、`GET /catalog/goods` 返回裸数组 `data:[…]`（与 `/catalog/games` 一致），空目录为 `[]`（不是 `null`）。
+6. **创建时只有 `title`（课程）/ `name`（商品）必填**：`summary/coverUrl/videoUrl/durationLabel/level/tags/sort/status` 均可省略（`status` 省略按 `off`，`sort` 省略按 `0`，数组字段省略下发为 `[]`），不会因为缺字段返回 400。
 
 另：`POST /admin/device-whitelist` 的 body 接受一个**可选扩展字段 `enabled`**（冻结契约只列 `deviceKey/modelId/note`），缺省视为启用。

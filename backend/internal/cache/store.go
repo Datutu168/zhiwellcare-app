@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,12 @@ type Store interface {
 	Get(ctx context.Context, key string) (string, bool, error)
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
 	Del(ctx context.Context, keys ...string) error
+	// DeletePrefix 删除所有以 prefix 开头的键（prefix 按字面前缀匹配，不含通配符）。
+	//
+	// 用途：迁移/启动引导直接写库时绕过了业务写路径的缓存失效，
+	// 启动后需要按命名空间（如 zwkl:rbac）整体清理一次。
+	// Redis 实现必须用 SCAN 游标迭代 + 批量 DEL，禁止用 KEYS（会阻塞单线程实例）。
+	DeletePrefix(ctx context.Context, prefix string) error
 	// Allow 固定窗口限流：窗口内第 max+1 次调用返回 false。
 	Allow(ctx context.Context, key string, window time.Duration, max int) (bool, error)
 	Ping(ctx context.Context) error
@@ -166,6 +173,27 @@ func (m *MemoryStore) Del(_ context.Context, keys ...string) error {
 	return nil
 }
 
+// DeletePrefix 遍历删除前缀命中的缓存项与限流计数（进程内实现无 SCAN 概念）。
+func (m *MemoryStore) DeletePrefix(_ context.Context, prefix string) error {
+	if strings.TrimSpace(prefix) == "" {
+		// 防呆：空前缀会清掉整个缓存，绝不允许误调用。
+		return errors.New("DeletePrefix 前缀不能为空")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.items {
+		if strings.HasPrefix(key, prefix) {
+			delete(m.items, key)
+		}
+	}
+	for key := range m.hits {
+		if strings.HasPrefix(key, prefix) {
+			delete(m.hits, key)
+		}
+	}
+	return nil
+}
+
 func (m *MemoryStore) Allow(_ context.Context, key string, window time.Duration, max int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -243,6 +271,50 @@ func (r *RedisStore) Del(ctx context.Context, keys ...string) error {
 		return nil
 	}
 	return r.client.Del(ctx, keys...).Err()
+}
+
+// deletePrefixBatch SCAN 每轮抓取的键数（仅影响往返次数，不影响正确性）。
+const deletePrefixBatch = 200
+
+// DeletePrefix 用 SCAN 游标迭代收集全部命中键，再分批 DEL。
+//
+// 两个刻意的取舍：
+//  1. 不用 KEYS：KEYS 会一次性遍历整个 keyspace 并阻塞 Redis 单线程，
+//     生产库键量大时会造成秒级卡顿（其它请求全部排队）。
+//  2. 先收集完再删（不是边扫边删）：SCAN 的游标语义在不同实现下对「遍历期间被删除的键」
+//     处理不一致（Redis 的 reverse-binary 游标不会跳过未删键，但索引式游标实现会因
+//     keyspace 收缩而错位跳键），两段式对两者都成立。收集量 = 命中键数，
+//     RBAC 缓存前缀下约为「有权限缓存的用户数」，启动时一次性开销可接受。
+func (r *RedisStore) DeletePrefix(ctx context.Context, prefix string) error {
+	if strings.TrimSpace(prefix) == "" {
+		// 防呆：空前缀会匹配整个 keyspace，绝不允许误调用清库。
+		return errors.New("DeletePrefix 前缀不能为空")
+	}
+	pattern := prefix + "*"
+	var cursor uint64
+	var matched []string
+	for {
+		keys, next, err := r.client.Scan(ctx, cursor, pattern, deletePrefixBatch).Result()
+		if err != nil {
+			return err
+		}
+		matched = append(matched, keys...)
+		// 游标回到 0 表示本轮遍历完成（SCAN 保证遍历期间一直存在的键至少返回一次）。
+		if next == 0 {
+			break
+		}
+		cursor = next
+	}
+	for start := 0; start < len(matched); start += deletePrefixBatch {
+		end := start + deletePrefixBatch
+		if end > len(matched) {
+			end = len(matched)
+		}
+		if err := r.client.Del(ctx, matched[start:end]...).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *RedisStore) Allow(ctx context.Context, key string, window time.Duration, max int) (bool, error) {

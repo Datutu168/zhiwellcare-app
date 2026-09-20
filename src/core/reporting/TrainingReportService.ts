@@ -14,6 +14,8 @@ export class TrainingReportService {
   constructor(private readonly transport: ITrainingReportTransport) {}
 
   async initialize(): Promise<void> {
+    // 启动时先补传本地待发队列（http 模式）；失败保留队列，不阻塞应用初始化。
+    try { await this.transport.flush() } catch { /* 网络或登录态不可用时留待下次 */ }
     await this.refreshPendingCount()
   }
 
@@ -25,8 +27,9 @@ export class TrainingReportService {
         this.pendingCount.value = result.queueLength
       }
     } catch (error) {
-      // 上报失败不打断训练流程：记录已本地入库（IndexedDB），可稍后补报。
+      // 上报失败不打断训练流程：记录已本地入库（IndexedDB），并进入待发队列等待补传。
       console.warn('[report] 训练记录上报失败，已保留在本地记录库：', error)
+      await this.refreshPendingCount()
     }
   }
 

@@ -12,7 +12,11 @@ import { catalogSourceStatus } from '../core/catalog/CatalogService'
 import { tagLabel, type MatchTag } from '../core/catalog/CapabilityTags'
 import { describeMissingTags } from '../core/catalog/tagMatching'
 import type { DeviceGameProfile, DeviceModelInfo, GameCatalogEntry } from '../core/catalog/DeviceCatalogTypes'
+import { gameResourceResolver } from '../core/resources/GameResourceResolver'
 import type { SensorConnectionSnapshot } from '../core/sensor/SensorConnectionManager'
+
+/** 大厅封面在 CDN 资源目录中的相对路径（清单登记后才启用，否则用内置字形封面）。 */
+const CDN_COVER_PATH = 'cover.png'
 
 /** 大厅列表：后端目录游戏 + 能运行该游戏的设备型号名（首台用于推荐展示）。 */
 type CatalogGame = GameCatalogEntry & { compatibleModels: string[] }
@@ -38,6 +42,8 @@ const connected = ref(false)
 const activeModel = ref<DeviceModelInfo | null>(null)
 const profile = ref<DeviceGameProfile | null>(null)
 const rangeReady = ref(false)
+/** 游戏 id → CDN 封面地址：仅清单登记 cover.png 且 resourceUrl 有效时才有值。 */
+const coverUrls = ref<Record<string, string>>({})
 
 const routeError = computed(() => (route.query.error === 'game-unavailable' ? '该训练游戏不存在或尚未开放。' : ''))
 
@@ -126,6 +132,7 @@ async function runRefresh(): Promise<void> {
     activeModel.value = model
     // Profile 为普通对象（非响应式），回到本页时组件会重建并在此重读。
     rangeReady.value = motionProfileService.getCurrent().measuredRange !== null
+    void loadCdnCovers(list)
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -187,6 +194,31 @@ function formatPresets(presets: readonly number[]): string {
 function coverGlyph(name: string): string {
   return name.slice(0, 2)
 }
+
+/**
+ * 远程封面解析：清单声明了 cover.png 才使用 CDN 地址（内存 + localStorage 缓存清单）；
+ * resourceUrl 为空、清单不可用或未声明该文件时静默回退内置字形封面，绝不因为 CDN 问题让大厅不可用。
+ */
+async function loadCdnCovers(list: CatalogGame[]): Promise<void> {
+  try {
+    const resolved = await Promise.all(list.map(async (entry) => {
+      const url = await gameResourceResolver.resolveDeclaredUrl(entry, CDN_COVER_PATH)
+      return url ? ([entry.gameId, url] as const) : null
+    }))
+    const next: Record<string, string> = {}
+    for (const item of resolved) if (item) next[item[0]] = item[1]
+    coverUrls.value = next
+  } catch {
+    coverUrls.value = {}
+  }
+}
+
+/** 远程封面加载失败（404/断网）时静默回退内置字形封面。 */
+function onCoverError(gameId: string): void {
+  const next = { ...coverUrls.value }
+  delete next[gameId]
+  coverUrls.value = next
+}
 </script>
 
 <template>
@@ -216,7 +248,7 @@ function coverGlyph(name: string): string {
 
     <div v-else class="grid-cards auto">
       <article v-for="card in cards" :key="card.entry.gameId" class="card game-card">
-        <div class="game-card-cover grad"><span class="cover-glyph">{{ coverGlyph(card.entry.name) }}</span></div>
+        <div class="game-card-cover grad"><img v-if="coverUrls[card.entry.gameId]" class="game-cover-img" :src="coverUrls[card.entry.gameId]" :alt="card.entry.name" @error="onCoverError(card.entry.gameId)" /><span v-else class="cover-glyph">{{ coverGlyph(card.entry.name) }}</span></div>
         <div>
           <div class="game-title-line">
             <h3>{{ card.entry.name }}</h3>
@@ -247,6 +279,7 @@ function coverGlyph(name: string): string {
 <style scoped>
 .game-card p { flex: initial; }
 .cover-glyph { font-size: 40px; font-weight: 800; letter-spacing: .12em; }
+.game-cover-img { width: 100%; height: 100%; border-radius: 12px; object-fit: cover; display: block; }
 .game-title-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .game-title-line h3 { margin: 0; }
 .game-meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 4px; font-size: 12px; }

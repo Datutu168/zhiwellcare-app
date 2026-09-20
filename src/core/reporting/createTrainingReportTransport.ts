@@ -7,8 +7,10 @@ import type { ITrainingReportTransport } from './TrainingReport'
 export function createTrainingReportTransport(): ITrainingReportTransport {
   const mode = import.meta.env.VITE_REPORT_MODE ?? 'local'
   const base = import.meta.env.VITE_API_BASE ?? ''
+  const store = new LocalStorageStore()
   if (mode === 'http' && base) {
-    return new HttpTrainingReportTransport(base.replace(/\/$/, ''))
+    // 与 local 模式共用同一个待发队列：断网期间攒下的记录切到 http 后由 flush() 补传。
+    return new HttpTrainingReportTransport(base.replace(/\/$/, ''), store)
   }
-  return new LocalTrainingReportTransport(new LocalStorageStore())
+  return new LocalTrainingReportTransport(store)
 }

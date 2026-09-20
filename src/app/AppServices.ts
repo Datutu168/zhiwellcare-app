@@ -20,12 +20,14 @@ import { AppUpdateService } from '../core/update/AppUpdateService'
 import { UpdateInstallGuard } from '../core/update/UpdateInstallGuard'
 import { UpdatePolicyRepository } from '../core/update/UpdatePolicyRepository'
 import { createUpdateProvider } from '../platform/update/createUpdateProvider'
-// 智为康乐新增：设备-游戏目录 / 训练上报
+// 智为康乐新增：设备-游戏目录 / 训练上报 / 采样直传 / 固件检查
 import { CatalogService } from '../core/catalog/CatalogService'
 import { resolveDeviceModel } from '../core/catalog/tagMatching'
 import type { TrainingRecordDeviceSnapshot } from '../core/training/TrainingRecord'
 import { TrainingReportService } from '../core/reporting/TrainingReportService'
 import { createTrainingReportTransport } from '../core/reporting/createTrainingReportTransport'
+import { createSampleUploader } from '../core/reporting/createSampleUploader'
+import { FirmwareUpdateService } from '../platform/update/FirmwareUpdateService'
 import { useDeviceLibraryStore } from '../stores/deviceLibrary'
 
 /** 应用级单例服务，确保切换页面时不会重复创建 BLE 监听与传感器处理链路。 */
@@ -44,6 +46,12 @@ export const catalogService = new CatalogService()
 
 /** 训练记录上报（local 待发队列 ↔ http 直传后端）。 */
 export const reportService = new TrainingReportService(createTrainingReportTransport())
+
+/** 训练高频采样文件直传（VITE_SAMPLES_MODE=http 且配置 VITE_API_BASE 时启用；默认完全关闭，不发任何请求）。 */
+export const sampleUploader = createSampleUploader()
+
+/** 设备固件更新检查（只读展示，不做任何刷机动作）。 */
+export const firmwareUpdateService = new FirmwareUpdateService()
 
 export const updateInstallGuard = new UpdateInstallGuard()
 export const updateService = new AppUpdateService(
@@ -64,6 +72,8 @@ export function initializeAppServices(): Promise<void> {
     await connectionManager.initialize()
     await catalogService.loadSnapshot()
     await reportService.initialize()
+    // 采样待发队列补传：未启用采样直传时为空操作，不产生任何请求。
+    try { await sampleUploader.flush() } catch { /* 采样补传失败不影响启动 */ }
     await useDeviceLibraryStore().load()
     // 自动连接不能阻塞历史、设置或回放页面的首次渲染。
     void connectionManager.startupConnect()
@@ -137,6 +147,8 @@ export async function persistTrainingResult<TResult extends BaseTrainingResult, 
   latestTrainingRecord.value = record
   // 上报失败不阻塞：训练已本地入库，状态可在“我的-训练数据”查看。
   void reportService.report(record)
+  // 高频采样（回放 JSON）直传对象存储：未配置 VITE_SAMPLES_MODE=http 时为空操作，不发请求。
+  void sampleUploader.uploadReplay(record)
   return record
 }
 

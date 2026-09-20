@@ -92,10 +92,34 @@ android/  Capacitor Android 壳（包名 com.zhiwellcare.app）
 src-tauri/ Tauri 2 Windows 壳（identifier com.zhiwellcare.app）
 ```
 
-## 八、后端对接（规划，未实现）
+## 八、后端与基础设施（Golang + Gin）
 
-Golang + Gin · PostgreSQL 16（JSONB 目录/配置 + 训练摘要分区表）· Redis（映射/白名单/会话缓存）· S3（Web 包/游戏资源/固件/采样文件）· CDN · RBAC 管理后台（Vue3 + Element Plus）。
-目录与上报的 HTTP 契约已在前端 `src/core/catalog/HttpCatalogSource.ts`、`src/core/reporting/HttpTrainingReportTransport.ts` 固化。
+技术栈：Golang + Gin · PostgreSQL 16 · Redis（映射/白名单/会话缓存 + 分布式限流）· S3 兼容对象存储（Web 包/游戏资源/固件/采样文件）· CDN · Vue3 + Element Plus 管理后台。
+目录与上报的 HTTP 契约固化在前端 `src/core/catalog/HttpCatalogSource.ts`、`src/core/reporting/HttpTrainingReportTransport.ts`（已对齐后端实现）。
+
+本节所列能力均已在**真实进程 + 真实 PostgreSQL** 上端到端验证（隔离 schema 跑迁移与接口，跑完即清理）：
+
+| 能力 | 实现位置 | 说明 |
+|---|---|---|
+| Redis 缓存 | `backend/internal/cache` | 设备映射读缓存、白名单读缓存、访问令牌吊销名单；**未配置 `APP_REDIS_URL` 或连不上时自动回退进程内实现**，单实例部署零额外依赖 |
+| 分布式限流 | `httpapi.RateLimit(cache.Store, …)` | Redis 部署下多实例共享额度；缓存故障退化为进程内计数，不会限流失效 |
+| 会话吊销 | `auth.Claims.jti` + `cache.Sessions` | 登出后访问令牌立即失效（按剩余有效期自动过期），不必等自然过期 |
+| 对象存储 | `backend/internal/objectstore` | S3 兼容（MinIO/OSS/COS/AWS，桶不存在自动创建）预签名直传；**未配置 S3 时回退本地磁盘 + HMAC 签名端点**，客户端流程完全一致 |
+| 采样文件直传 | `POST /api/v1/training/records/:recordId/samples/upload-url` | 归属校验（本人或管理员）→ 预签名地址 → 客户端直传对象存储 |
+| RBAC | `roles/permissions/role_permissions/user_roles` + `rbac.Resolver` | 15 个权限点、3 个内置角色（admin/operator/viewer）；`RequirePermission` 逐路由鉴权，**解析失败按拒绝处理**，权限变更走写路径失效缓存（改角色后无需重新登录即生效） |
+| JSONB 配置中心 | `app_config` + 目录 `config` 列 | 任何 JSON 值可读写（目录版本、灰度开关、功能开关已种子化） |
+| 训练摘要按月分区 | `migrations/003_rbac_config.sql` | RANGE(completed_at) 月分区 + DEFAULT 兜底 + `ensure_partition()` 按需建分区；`UNIQUE(record_id)` 改为复合主键 `(record_id, completed_at)` 以兼容分区表，重复上报仍幂等；旧表只改名归档、不删数据 |
+| 资产发布与 CDN 下发 | `assets` 表 + `/api/v1/admin/assets*` | Web 包/游戏资源/固件统一登记与上下架；已发布资产经 CDN 前缀（未配则预签名）下发 |
+| 固件 / Web 包更新 | `/api/v1/device/:modelId/firmware`、`/api/v1/app/web-bundle` | 公开接口按 `currentVersion` 返回「有更新 / 已是最新」，草稿资产不下发 |
+| 前端消费 CDN | `src/core/resources/` | `resourceUrl` 真正生效（清单校验 + 成功 6h/失败 5min 双 TTL 缓存），兼容「目录前缀」与「文件 URL」两种形状；**清单缺失或不可用时静默回退内置资源** |
+| 一键编排 | `docker-compose.yml` + `deploy/nginx.conf` | PostgreSQL 16 + Redis 7 + MinIO + 后端 + Nginx 静态下发（`/api` 反代、`/assets` 强缓存、SPA 回退、`client_max_body_size 64m`） |
+
+运维要点：
+- **启动日志会打印数据库主机与库名**（不含密码），请务必核对，避免误连（曾发生过 `$env:APP_DB_URL=''` 被 PowerShell 删除变量、`godotenv` 又回填 `.env` 里正式库连接串的事故）。
+- **同源部署要显式把 `VITE_API_BASE` 设为空串**：`src/api/http.ts` 用 `import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8080'`，未设置时会退到本机 8080；构建时写 `VITE_API_BASE=`（空串，非「不设置」）才会走同源 `/api`，从而复用 `deploy/nginx.conf` 的反代。
+- 本地对象存储模式下，采样文件直传会经过 Nginx 反代，已放宽到 64MB；S3 部署则由客户端直连对象存储。
+- `docker compose up -d` 全套启动；仅起中间件用 `docker compose up -d postgres redis minio`。`web` 服务需要先在本机 `npm run build` 生成 `dist/`。
+- 管理后台自带冒烟回归：`cd admin && npm run smoke`（admin 侧自包含 vitest + jsdom，**不影响根 `npm test`**；根套件只收集 `src/` 与 `tests/` 的用例）。
 
 ## 九、注册 / 登录（已落地，见 backend/）
 

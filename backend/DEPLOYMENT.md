@@ -67,6 +67,27 @@ docker compose up -d postgres redis minio   # 只起中间件，本机 go run �
 - `web` 服务挂载 `./dist`，**需先在本机 `npm run build`**；`deploy/nginx.conf` 已含 `/api` 反代、`/assets` 强缓存、SPA 回退与 64MB 直传上限。
 - 前端同源部署时构建要显式设置 `VITE_API_BASE=`（空串，而非「不设置」），否则会退到本机 `http://127.0.0.1:8080`。
 
+### 7.1 单机（Lighthouse）多域名 vhost
+
+单机生产用三个独立 vhost，完整配置与安装脚本见 `deploy/nginx-sites/`（含 README）：
+
+```bash
+sudo bash deploy/nginx-sites/install.sh          # 幂等：备份 → nginx -t → reload → 自检
+```
+
+| 站点 | server_name | 静态目录 | `/api/` 反代 |
+| --- | --- | --- | --- |
+| 官网 | `zhiwellcare.com` / `www` / `.cn` | `/srv/sites/web/current` | 否（纯静态） |
+| App 网页版 | `game.zhiwellcare.com` | `/srv/sites/app/current` | 是 |
+| 运营后台 | `admin.zhiwellcare.com` | `/srv/sites/admin/current` | **必须有** |
+
+**后台 vhost 缺 `/api/` 反代会表现为"登录进不去"而不是"配置错误"**：`admin/` 前端用相对路径
+`fetch(`/api/v1${path}`)`，没有反代时 `POST` 被 nginx 静态层拒成 **405**，`GET` 命中 SPA 回退返回
+**200 + index.html**（前端解析 JSON 才失败）。排查时先确认 `admin.zhiwellcare.com` 的 `/api/v1/...`
+响应的 `Content-Type` 是 `application/json` 而不是 `text/html`。
+
+官网不反代 `/api/`，以官网域名为 Host 请求 `/api/v1/...` 返回 404 属预期。
+
 ## 八、健康与监控
 
 - `GET /healthz` 探活，并回报中间件后端类型：`{"status":"ok","cache":"redis|memory","storage":"s3|local"}`，可据此确认 Redis/S3 是否真正生效（未生效即为已回退）。
@@ -84,3 +105,5 @@ docker compose up -d postgres redis minio   # 只起中间件，本机 go run �
 5. **权限即时生效**：给用户 `PUT /admin/users/:id/roles` 后用**同一个 token** 重试原接口，应立即放行/拒绝（无需重新登录）；服务重启后同样立即按最新角色判定。
 6. **迁移自检**：迁移在分区表索引缺失时会 `RAISE EXCEPTION` 并整体回滚——若启动日志出现该错误，说明存在占名的同名 relation，先处理再重启（不要靠删索引绕过）。
 7. `training_records` 写入不需要手工建分区：`training_records_ensure_partition()` 在插入前按需创建，DEFAULT 分区兜底；可用 `SELECT tableoid::regclass FROM training_records WHERE record_id='…'` 确认数据落在当月分区。
+8. **后台同源可用性**：以 `admin.zhiwellcare.com` 为 Host 请求 `POST /api/v1/auth/login` 必须返回 200 且 `Content-Type: application/json`（返回 405 或 HTML 说明该 vhost 漏了 `/api/` 反代，见 §7.1）。
+9. **权限缓存清理**：改动角色/权限的迁移或 `APP_ADMIN_BOOTSTRAP_PHONE` 触发管理员提升时，启动日志应出现 `权限缓存已清理 prefix=zwkl:rbac`，且随后用同一账号访问 `/api/v1/admin/*` 应为 200（不是 403）。

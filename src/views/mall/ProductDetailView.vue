@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { findGoodsById, readMallCart, writeMallCart } from '../../data/mall'
+import { contentService } from '../../app/AppServices'
+import { readMallCart, writeMallCart } from '../../core/content/MallCart'
+import type { MallGoodsItem } from '../../core/content/ContentTypes'
 
 const route = useRoute()
 const router = useRouter()
@@ -12,16 +14,40 @@ const addTip = ref(false)
 let addTipTimer: number | null = null
 
 const productId = computed(() => (typeof route.params.productId === 'string' ? route.params.productId : ''))
-const goods = computed(() => (productId.value ? findGoodsById(productId.value) : undefined))
+/** 商品内容统一来自 ContentService；商品不存在时 goods 为 null → 渲染空态。 */
+const goods = ref<MallGoodsItem | null>(null)
+const goodsLoaded = ref(false)
 const isService = computed(() => goods.value?.kind === 'service')
 const isPresale = computed(() => goods.value?.badges.includes('预售演示') ?? false)
 
-/** 强制展示的消费版通用声明（硬件 / 服务分别措辞）。 */
-const genericDisclaimer = computed(() =>
-  goods.value?.kind === 'hardware'
+/** 路由参数变化（同组件复用）时重新取数。 */
+watch(productId, (id) => { void loadGoods(id) }, { immediate: true })
+
+async function loadGoods(id: string): Promise<void> {
+  try { goods.value = id ? await contentService.findGoods(id) : null }
+  catch { goods.value = null }
+  finally { goodsLoaded.value = true }
+}
+
+/** 强制展示的消费版通用声明（硬件 / 服务 / 品类未知分别措辞）。 */
+const genericDisclaimer = computed(() => {
+  const current = goods.value
+  if (!current) return ''
+  // 远端契约不提供品类：品类未知时用中性表述，避免把上门服务误标成消费级硬件。
+  if (!current.kindKnown) {
+    return '本商品为消费级商品（消费品）：实物为主动训练设备，无医疗器械功能、无被动电机驱动，训练动作完全由使用者主动发力完成；上门类为居家健身指导（非医疗服务）。请按说明使用并量力而行，感到不适时立即停止。'
+  }
+  return current.kind === 'hardware'
     ? '本商品为消费级主动训练设备（消费品），无医疗器械功能、无被动电机驱动，训练动作完全由使用者主动发力完成；请按说明使用并量力而行，感到不适时立即停止。'
-    : '本服务为上门居家健身指导（非医疗服务），由合作服务商承接，仅提供居家健身动作演示与跟练支持；请量力而行，感到不适时立即停止，必要时寻求线下专业帮助。',
-)
+    : '本服务为上门居家健身指导（非医疗服务），由合作服务商承接，仅提供居家健身动作演示与跟练支持；请量力而行，感到不适时立即停止，必要时寻求线下专业帮助。'
+})
+
+/** 品类角标：品类未知时不写死硬件/服务。 */
+const kindChipLabel = computed(() => {
+  const current = goods.value
+  if (!current?.kindKnown) return '商品'
+  return current.kind === 'service' ? '服务' : '硬件'
+})
 
 onBeforeUnmount(() => {
   if (addTipTimer !== null) window.clearTimeout(addTipTimer)
@@ -55,9 +81,10 @@ function goBackToMall(): void {
         <!-- 左侧：cover 大图区 -->
         <section class="card mall-detail-cover-card">
           <div class="goods-cover mall-detail-cover" :class="{ 'is-service': isService }">
-            <span class="mall-kind-chip" :class="{ 'is-service': isService }">{{ isService ? '服务' : '硬件' }}</span>
-            <span class="mall-cover-emoji" aria-hidden="true">{{ goods.cover }}</span>
-            <span class="mall-detail-price-pill">演示价 ¥{{ goods.price }}/{{ goods.priceUnit }}</span>
+            <span class="mall-kind-chip" :class="{ 'is-service': isService }">{{ kindChipLabel }}</span>
+            <img v-if="goods.coverUrl" class="cover-img" :src="goods.coverUrl" :alt="goods.name" />
+            <span v-else class="mall-cover-emoji" aria-hidden="true">{{ goods.cover }}</span>
+            <span class="mall-detail-price-pill">演示价 {{ goods.priceLabel }}/{{ goods.priceUnit }}</span>
           </div>
           <div v-if="goods.relatedHardware" class="mall-related-hint">
             <span class="tag-chip is-warn">需搭配</span>
@@ -75,9 +102,12 @@ function goBackToMall(): void {
             <span v-for="badge in goods.badges" :key="badge" class="tag-chip" :class="{ 'is-cyan': isService }">{{ badge }}</span>
             <span v-if="isService" class="tag-chip is-cyan">上门居家健身指导（非医疗服务）</span>
           </div>
+          <a v-if="goods.detailUrl" class="mall-detail-link" :href="goods.detailUrl" target="_blank" rel="noopener">
+            查看官方商品详情 <span aria-hidden="true">›</span>
+          </a>
 
           <div class="mall-detail-price">
-            <span class="mall-detail-price-num">演示价 ¥{{ goods.price }}<span class="mall-detail-price-unit">/{{ goods.priceUnit }}</span></span>
+            <span class="mall-detail-price-num">演示价 {{ goods.priceLabel }}<span class="mall-detail-price-unit">/{{ goods.priceUnit }}</span></span>
             <span class="mall-detail-price-note">正式版接入支付后开放下单，当前不产生真实订单与扣款。</span>
           </div>
 
@@ -96,15 +126,15 @@ function goBackToMall(): void {
       </div>
 
       <!-- 规格 / 套餐内容 -->
-      <section class="card mall-detail-section">
+      <section v-if="goods.specs.length" class="card mall-detail-section">
         <h2 class="section-title">{{ isService ? '套餐内容' : '规格与能力' }}</h2>
         <ul class="mall-spec-list">
-          <li v-for="(item, index) in goods.spec" :key="index">{{ item }}</li>
+          <li v-for="(item, index) in goods.specs" :key="index">{{ item }}</li>
         </ul>
       </section>
 
       <!-- 详情说明 -->
-      <section class="card mall-detail-section">
+      <section v-if="goods.detail.length" class="card mall-detail-section">
         <h2 class="section-title">详情说明</h2>
         <p v-for="(paragraph, index) in goods.detail" :key="index" class="mall-detail-paragraph">{{ paragraph }}</p>
       </section>
@@ -122,11 +152,11 @@ function goBackToMall(): void {
 
       <!-- 强制免责声明卡（专属 + 消费版通用） -->
       <section class="mall-disclaimers">
-        <div class="compliance-note">
+        <div v-if="goods.disclaimer" class="compliance-note">
           <strong>专属免责声明：</strong><span>{{ goods.disclaimer }}</span>
         </div>
         <div class="compliance-note">
-          <strong>{{ isService ? '服务通用声明：' : '消费品通用声明：' }}</strong><span>{{ genericDisclaimer }}</span>
+          <strong>{{ isService ? '服务通用声明：' : (goods.kindKnown ? '消费品通用声明：' : '商品通用声明：') }}</strong><span>{{ genericDisclaimer }}</span>
         </div>
       </section>
 
@@ -164,12 +194,22 @@ function goBackToMall(): void {
               <li>账号打通：经 UnionID 打通 APP 账号与合作服务商账号。</li>
               <li>核销与预约：由合作服务商小程序完成；APP 内不展示派单 / 工单信息。</li>
             </ul>
-            <h3 class="mall-dialog-h3">专属免责声明</h3>
-            <p class="mall-dialog-paragraph">{{ goods.disclaimer }}</p>
+            <template v-if="goods.disclaimer">
+              <h3 class="mall-dialog-h3">专属免责声明</h3>
+              <p class="mall-dialog-paragraph">{{ goods.disclaimer }}</p>
+            </template>
             <footer class="mall-dialog-actions"><button type="button" class="button primary wide" @click="serviceNoteOpen = false">知道了</button></footer>
           </section>
         </div>
       </Teleport>
+    </template>
+
+    <!-- 加载中：内容来自 ContentService（可能等待后端接口） -->
+    <template v-else-if="!goodsLoaded">
+      <div class="empty-state mall-not-found">
+        <div class="empty-ic">⏳</div>
+        <p>正在加载商品…</p>
+      </div>
     </template>
 
     <!-- 商品缺失空状态 -->
@@ -212,6 +252,10 @@ function goBackToMall(): void {
 }
 .mall-kind-chip.is-service { background: #08978b; }
 .mall-cover-emoji { font-size: 78px; line-height: 1; }
+/* 远端下发 CDN 商品图时用图片替代 emoji 占位（内置兜底数据无 coverUrl） */
+.cover-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 12px; }
+.mall-detail-link { display: inline-block; margin: 10px 0 0; color: var(--c-primary); font-size: 13px; font-weight: 700; text-decoration: none; }
+.mall-detail-link:hover { text-decoration: underline; }
 .mall-detail-price-pill {
   position: absolute;
   left: 12px;

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { courseCategories, courses } from '../../data/courses'
+import { contentService } from '../../app/AppServices'
+import { contentSourceStatus } from '../../core/content/ContentService'
+import { listCourseCategories } from '../../core/content/ContentTaxonomy'
+import type { CourseItem } from '../../core/content/ContentTypes'
 import { LocalStorageStore } from '../../core/storage/LocalStorageStore'
 
 /** 打卡本地存储 key：{ [courseId]: string[]（yyyy-MM-dd 打卡日期数组）}。 */
@@ -16,9 +19,17 @@ const store = new LocalStorageStore()
 const checkins = ref<CheckinMap>({})
 const loaded = ref(false)
 const activeCategory = ref('全部')
+/** 课程内容统一来自 ContentService（http 模式失败会自动回退内置课程）。 */
+const courseList = ref<CourseItem[]>([])
+const courseLoaded = ref(false)
+const courseCategories = listCourseCategories()
+/** 后端内容不可用已回退内置内容时的界面提示（内置/后端正常时不显示）。 */
+const contentOfflineHint = computed(() => contentSourceStatus.value.kind === 'http-fallback-mock')
 
 const filteredCourses = computed(() =>
-  activeCategory.value === '全部' ? courses : courses.filter((course) => course.category === activeCategory.value),
+  activeCategory.value === '全部'
+    ? courseList.value
+    : courseList.value.filter((course) => course.category === activeCategory.value),
 )
 
 /** 打卡汇总：今日次数 / 连续天数 / 累计次数 / 本机日期。 */
@@ -54,6 +65,9 @@ onMounted(async () => {
   try { checkins.value = normalizeCheckins(await store.get(CHECKIN_KEY)) }
   catch { checkins.value = {} }
   finally { loaded.value = true }
+  try { courseList.value = await contentService.listCourses() }
+  catch { courseList.value = [] }
+  finally { courseLoaded.value = true }
 })
 
 /** 本机日期 → yyyy-MM-dd（避免 UTC 时区偏差）。 */
@@ -125,33 +139,42 @@ function calcStreakDays(dates: Set<string>, todayKey: string): number {
       >{{ category }}</button>
     </div>
 
+    <p v-if="contentOfflineHint" class="muted small content-source-note" :title="contentSourceStatus.message">
+      当前为离线内容：后端课程接口暂不可用，已回退内置课程。
+    </p>
+
     <!-- 课程卡片网格 -->
     <section v-if="filteredCourses.length" class="grid-cards auto course-grid">
       <button
         v-for="course in filteredCourses"
-        :key="course.id"
+        :key="course.courseId"
         type="button"
         class="course-card card card-hover"
-        :aria-label="`${course.title}，${course.category}${course.level}课程，${isDoneToday(course.id) ? '今日已打卡' : '今日未打卡'}`"
-        @click="openCourse(course.id)"
+        :aria-label="`${course.title}，${course.category}${course.level}课程，${isDoneToday(course.courseId) ? '今日已打卡' : '今日未打卡'}`"
+        @click="openCourse(course.courseId)"
       >
         <span class="course-cover">
-          <span class="cover-emoji" aria-hidden="true">{{ course.cover }}</span>
-          <span class="duration">约 {{ course.durationMin }} 分钟</span>
+          <img v-if="course.coverUrl" class="cover-img" :src="course.coverUrl" :alt="course.title" />
+          <span v-else class="cover-emoji" aria-hidden="true">{{ course.cover }}</span>
+          <span class="duration">{{ course.durationLabel }}</span>
         </span>
         <span class="course-title">{{ course.title }}</span>
         <span class="course-summary">{{ course.summary }}</span>
         <span class="tag-chip-row course-tags">
           <span class="tag-chip is-cyan">{{ course.category }}</span>
-          <span class="tag-chip">{{ course.level }}</span>
+          <span v-if="course.level" class="tag-chip">{{ course.level }}</span>
           <span v-for="tag in course.tags.slice(0, 2)" :key="tag" class="tag-chip is-off">{{ tag }}</span>
         </span>
         <span class="course-foot">
-          <span class="checkin-state" :class="{ 'is-done': isDoneToday(course.id) }">{{ isDoneToday(course.id) ? '✔ 今日已打卡' : '今日未打卡' }}</span>
+          <span class="checkin-state" :class="{ 'is-done': isDoneToday(course.courseId) }">{{ isDoneToday(course.courseId) ? '✔ 今日已打卡' : '今日未打卡' }}</span>
           <span class="course-cta">开始 / 详情 <span aria-hidden="true">→</span></span>
         </span>
       </button>
     </section>
+    <div v-else-if="!courseLoaded" class="empty-state">
+      <div class="empty-ic" aria-hidden="true">⏳</div>
+      <p>正在加载课程…</p>
+    </div>
     <div v-else class="empty-state">
       <div class="empty-ic" aria-hidden="true">🧘</div>
       <p>该分类下暂时没有课程，先看看其他分类吧。</p>
@@ -190,6 +213,9 @@ function calcStreakDays(dates: Set<string>, todayKey: string): number {
 /* 课程卡（按钮整卡可点） */
 .course-card { width: 100%; text-align: left; color: var(--c-ink); }
 .cover-emoji { line-height: 1; }
+/* 远端下发 CDN 封面时用图片替代 emoji 占位（离线内置数据无 coverUrl，仍走 emoji） */
+.cover-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; }
+.content-source-note { margin: 10px 0 0; }
 .course-title { font-weight: 700; font-size: 15px; line-height: 1.4; color: var(--c-ink); }
 .course-summary {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;

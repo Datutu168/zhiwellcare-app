@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { findGoodsById, mallCategories, mallGoods, readMallCart, writeMallCart } from '../../data/mall'
-import type { Goods, MallCartItem } from '../../data/mall'
+import { contentService } from '../../app/AppServices'
+import { contentSourceStatus } from '../../core/content/ContentService'
+import { listGoodsCategories } from '../../core/content/ContentTaxonomy'
+import { formatPriceCents } from '../../core/content/normalize'
+import { readMallCart, writeMallCart } from '../../core/content/MallCart'
+import type { MallCartItem } from '../../core/content/MallCart'
+import type { MallGoodsItem } from '../../core/content/ContentTypes'
 
 type CategoryId = 'all' | 'hardware' | 'service'
 
@@ -12,19 +17,44 @@ const activeCategory = ref<CategoryId>('all')
 const cartItems = ref<MallCartItem[]>([])
 const cartOpen = ref(false)
 const cartNote = ref('')
+/** 商品内容统一来自 ContentService（http 模式失败会自动回退内置商品）。 */
+const goodsList = ref<MallGoodsItem[]>([])
+const goodsLoaded = ref(false)
+const goodsCategories = listGoodsCategories()
+/** 后端内容不可用已回退内置内容时的界面提示（内置/后端正常时不显示）。 */
+const contentOfflineHint = computed(() => contentSourceStatus.value.kind === 'http-fallback-mock')
 
 const filteredGoods = computed(() =>
-  activeCategory.value === 'all' ? mallGoods : mallGoods.filter((goods) => goods.kind === activeCategory.value),
+  activeCategory.value === 'all'
+    ? goodsList.value
+    // 品类未知（后端契约无该维度）的商品只在「全部」下出现，不误塞进硬件/服务分类。
+    : goodsList.value.filter((goods) => goods.kindKnown && goods.kind === activeCategory.value),
 )
+const goodsById = computed(() => new Map(goodsList.value.map((goods) => [goods.goodsId, goods] as const)))
 const cartCount = computed(() => cartItems.value.reduce((sum, item) => sum + item.quantity, 0))
-const cartTotal = computed(() =>
+/** 合计一律按「分」做整数累加，仅在展示时换算成元。 */
+const cartTotalCents = computed(() =>
   cartItems.value.reduce((sum, item) => {
-    const goods = findGoodsById(item.productId)
-    return sum + (goods ? goods.price * item.quantity : 0)
+    const goods = goodsById.value.get(item.productId)
+    return sum + (goods ? goods.priceCents * item.quantity : 0)
   }, 0),
 )
 
-onMounted(refreshCart)
+onMounted(() => {
+  refreshCart()
+  void loadGoods()
+})
+
+/** 商品取数失败不阻塞页面：ContentService 内部已回退内置商品，这里只兜底空列表。 */
+async function loadGoods(): Promise<void> {
+  try { goodsList.value = await contentService.listGoods() }
+  catch { goodsList.value = [] }
+  finally { goodsLoaded.value = true }
+}
+
+function goodsCoverUrl(goodsId: string): string {
+  return goodsById.value.get(goodsId)?.coverUrl ?? ''
+}
 
 function refreshCart(): void {
   cartItems.value = readMallCart()
@@ -50,16 +80,24 @@ function showCheckoutNote(): void {
   cartNote.value = '当前为演示环境：不会产生真实订单与扣款；正式版接入 Golang 后端订单系统与支付后开放结算。'
 }
 
-function goDetail(goods: Goods): void {
-  void router.push(`/mall/product/${goods.id}`)
+function goDetail(goods: MallGoodsItem): void {
+  void router.push(`/mall/product/${goods.goodsId}`)
 }
 
-function isService(goods: Goods): boolean {
+function isService(goods: MallGoodsItem): boolean {
   return goods.kind === 'service'
 }
 
-function kindLabel(goods: Goods): string {
+/** 品类角标：品类未知（远端契约无该字段）时不写死硬件/服务。 */
+function kindLabel(goods: MallGoodsItem): string {
+  if (!goods.kindKnown) return '商品'
   return goods.kind === 'hardware' ? '硬件' : '服务'
+}
+
+/** 卡片底部一句话说明：品类未知时用中性表述，避免把服务误标成硬件。 */
+function metaLabel(goods: MallGoodsItem): string {
+  if (!goods.kindKnown) return '商品详情见商品页'
+  return goods.kind === 'hardware' ? '消费级主动训练硬件' : '上门居家健身指导（非医疗服务）'
 }
 </script>
 
@@ -86,7 +124,7 @@ function kindLabel(goods: Goods): string {
 
     <div class="mall-tabs" role="tablist" aria-label="商品分类">
       <button
-        v-for="category in mallCategories"
+        v-for="category in goodsCategories"
         :key="category.id"
         type="button"
         role="tab"
@@ -97,12 +135,17 @@ function kindLabel(goods: Goods): string {
       >{{ category.label }}</button>
     </div>
 
+    <p v-if="contentOfflineHint" class="muted small content-source-note" :title="contentSourceStatus.message">
+      当前为离线内容：后端商品接口暂不可用，已回退内置演示商品。
+    </p>
+
     <div v-if="filteredGoods.length" class="grid-cards auto mall-goods-grid">
-      <article v-for="goods in filteredGoods" :key="goods.id" class="card card-hover goods-card" @click="goDetail(goods)">
+      <article v-for="goods in filteredGoods" :key="goods.goodsId" class="card card-hover goods-card" @click="goDetail(goods)">
         <div class="goods-cover" :class="{ 'is-service': isService(goods) }">
           <span class="mall-kind-chip" :class="{ 'is-service': isService(goods) }">{{ kindLabel(goods) }}</span>
-          <span class="mall-cover-emoji" aria-hidden="true">{{ goods.cover }}</span>
-          <span class="price-tag">演示价 ¥{{ goods.price }}/{{ goods.priceUnit }}</span>
+          <img v-if="goods.coverUrl" class="cover-img" :src="goods.coverUrl" :alt="goods.name" />
+          <span v-else class="mall-cover-emoji" aria-hidden="true">{{ goods.cover }}</span>
+          <span class="price-tag">演示价 {{ goods.priceLabel }}/{{ goods.priceUnit }}</span>
         </div>
         <h3 class="mall-goods-name">{{ goods.name }}</h3>
         <p class="muted small mall-goods-summary">{{ goods.summary }}</p>
@@ -111,13 +154,17 @@ function kindLabel(goods: Goods): string {
           <span v-if="goods.relatedHardware" class="tag-chip is-warn">需搭配训练底座</span>
         </div>
         <div class="goods-meta mall-goods-meta">
-          <span>{{ isService(goods) ? '上门居家健身指导（非医疗服务）' : '消费级主动训练硬件' }}</span>
+          <span>{{ metaLabel(goods) }}</span>
         </div>
         <div class="mall-card-footer">
-          <span class="goods-price">¥{{ goods.price }}<span class="mall-price-unit">/{{ goods.priceUnit }}</span></span>
+          <span class="goods-price">{{ goods.priceLabel }}<span class="mall-price-unit">/{{ goods.priceUnit }}</span></span>
           <button type="button" class="button primary small" @click.stop="goDetail(goods)">查看详情</button>
         </div>
       </article>
+    </div>
+    <div v-else-if="!goodsLoaded" class="empty-state mall-goods-loading">
+      <div class="empty-ic" aria-hidden="true">⏳</div>
+      <p>正在加载商品…</p>
     </div>
 
     <div class="compliance-note mall-footer-note">
@@ -137,12 +184,15 @@ function kindLabel(goods: Goods): string {
           <template v-if="cartItems.length">
             <ul class="mall-cart-list">
               <li v-for="item in cartItems" :key="item.productId" class="mall-cart-row">
-                <span class="mall-cart-thumb" aria-hidden="true">{{ findGoodsById(item.productId)?.cover ?? '❓' }}</span>
-                <span class="mall-cart-info">
-                  <strong>{{ findGoodsById(item.productId)?.name ?? '未知商品' }}</strong>
-                  <small>演示价 ¥{{ findGoodsById(item.productId)?.price ?? 0 }}/{{ findGoodsById(item.productId)?.priceUnit ?? '件' }} · ×{{ item.quantity }}</small>
+                <span class="mall-cart-thumb" aria-hidden="true">
+                  <img v-if="goodsCoverUrl(item.productId)" class="cover-img" :src="goodsCoverUrl(item.productId)" alt="" />
+                  <template v-else>{{ goodsById.get(item.productId)?.cover ?? '❓' }}</template>
                 </span>
-                <span class="mall-cart-sub">¥{{ (findGoodsById(item.productId)?.price ?? 0) * item.quantity }}</span>
+                <span class="mall-cart-info">
+                  <strong>{{ goodsById.get(item.productId)?.name ?? '未知商品' }}</strong>
+                  <small>演示价 {{ goodsById.get(item.productId)?.priceLabel ?? '价格待定' }}/{{ goodsById.get(item.productId)?.priceUnit ?? '件' }} · ×{{ item.quantity }}</small>
+                </span>
+                <span class="mall-cart-sub">{{ formatPriceCents((goodsById.get(item.productId)?.priceCents ?? 0) * item.quantity) }}</span>
                 <button type="button" class="button small" @click="removeFromCart(item.productId)">移除</button>
               </li>
             </ul>
@@ -150,7 +200,7 @@ function kindLabel(goods: Goods): string {
               <span class="mall-cart-count muted small">共 {{ cartCount }} 件</span>
               <button type="button" class="button small" @click="clearCart">清空购物车</button>
             </div>
-            <div class="mall-cart-total"><span>合计（演示价）</span><strong>¥{{ cartTotal }}</strong></div>
+            <div class="mall-cart-total"><span>合计（演示价）</span><strong>{{ formatPriceCents(cartTotalCents) }}</strong></div>
           </template>
           <div v-else class="empty-state mall-cart-empty">
             <div class="empty-ic">🛒</div>
@@ -232,6 +282,10 @@ function kindLabel(goods: Goods): string {
 
 .mall-goods-grid { margin-bottom: 18px; }
 .goods-cover.is-service { background: linear-gradient(150deg, #e6fbf8, #dff3ef); }
+/* 远端下发 CDN 商品图时用图片替代 emoji 占位（内置兜底数据无 coverUrl） */
+.cover-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; }
+.content-source-note { margin: 10px 0 0; }
+.mall-goods-loading { padding: 26px 10px; }
 .mall-kind-chip {
   position: absolute;
   top: 10px;

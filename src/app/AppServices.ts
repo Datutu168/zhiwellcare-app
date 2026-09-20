@@ -23,6 +23,8 @@ import { createUpdateProvider } from '../platform/update/createUpdateProvider'
 // 智为康乐新增：设备-游戏目录 / 训练上报 / 采样直传 / 固件检查
 import { CatalogService } from '../core/catalog/CatalogService'
 import { resolveDeviceModel } from '../core/catalog/tagMatching'
+// 内容（课程/商城）：与设备目录同一套「HTTP 优先 + 内置兜底」策略
+import { ContentService } from '../core/content/ContentService'
 import type { TrainingRecordDeviceSnapshot } from '../core/training/TrainingRecord'
 import { TrainingReportService } from '../core/reporting/TrainingReportService'
 import { createTrainingReportTransport } from '../core/reporting/createTrainingReportTransport'
@@ -43,6 +45,9 @@ export const trainingRepository = new IndexedDbTrainingRepository()
 
 /** 设备-游戏目录（本地 Mock ↔ Golang 后端，运行时可切换/回退）。 */
 export const catalogService = new CatalogService()
+
+/** 内容（课程/教程 + 商城商品）：内置内容兜底 ↔ Golang 后端内容接口，由 VITE_CATALOG_MODE 切换。 */
+export const contentService = new ContentService()
 
 /** 训练记录上报（local 待发队列 ↔ http 直传后端）。 */
 export const reportService = new TrainingReportService(createTrainingReportTransport())
@@ -71,6 +76,8 @@ export function initializeAppServices(): Promise<void> {
     await motionProfileService.load()
     await connectionManager.initialize()
     await catalogService.loadSnapshot()
+    // 内容（课程/商城）预取：不阻塞启动，失败由 ContentService 内部回退内置内容。
+    void contentService.loadSnapshot().catch(() => { /* 内置兜底，页面自身仍会取到内容 */ })
     await reportService.initialize()
     // 采样待发队列补传：未启用采样直传时为空操作，不产生任何请求。
     try { await sampleUploader.flush() } catch { /* 采样补传失败不影响启动 */ }

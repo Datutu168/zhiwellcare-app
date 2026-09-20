@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { courses } from '../../data/courses'
+import { contentService } from '../../app/AppServices'
+import type { CourseItem } from '../../core/content/ContentTypes'
 import { LocalStorageStore } from '../../core/storage/LocalStorageStore'
 
 /** 打卡本地存储 key：{ [courseId]: string[]（yyyy-MM-dd 打卡日期数组）}。 */
@@ -15,8 +16,9 @@ const router = useRouter()
 const store = new LocalStorageStore()
 
 const rawCourseId = computed(() => String(route.params.courseId ?? ''))
-/** 课程不存在时 course 为 null → 渲染空态。 */
-const course = computed(() => courses.find((item) => item.id === rawCourseId.value) ?? null)
+/** 课程内容统一来自 ContentService；课程不存在时 course 为 null → 渲染空态。 */
+const course = ref<CourseItem | null>(null)
+const courseLoaded = ref(false)
 
 const checkinDates = ref<string[]>([])
 const loaded = ref(false)
@@ -30,6 +32,15 @@ const historyText = computed(() =>
     ? `打卡历史 · 累计 ${checkinDates.value.length} 次`
     : '暂无打卡记录，完成本课程跟练即可点亮今日 ✔',
 )
+
+/** 路由参数变化（同组件复用）时重新取数。 */
+watch(rawCourseId, (courseId) => { void loadCourse(courseId) }, { immediate: true })
+
+async function loadCourse(courseId: string): Promise<void> {
+  try { course.value = courseId ? await contentService.findCourse(courseId) : null }
+  catch { course.value = null }
+  finally { courseLoaded.value = true }
+}
 
 onMounted(async () => {
   try {
@@ -49,11 +60,11 @@ async function doCheckin(): Promise<void> {
   try {
     const map = normalizeCheckins(await store.get(CHECKIN_KEY))
     const day = localDateKey(new Date())
-    const list = Array.isArray(map[target.id]) ? map[target.id] : []
+    const list = Array.isArray(map[target.courseId]) ? map[target.courseId] : []
     if (!list.includes(day)) list.push(day)
-    map[target.id] = [...new Set(list)].sort()
+    map[target.courseId] = [...new Set(list)].sort()
     await store.set(CHECKIN_KEY, JSON.stringify(map))
-    checkinDates.value = map[target.id]
+    checkinDates.value = map[target.courseId]
   }
   catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) }
   finally { saving.value = false }
@@ -102,16 +113,17 @@ function normalizeCheckins(raw: string | null): CheckinMap {
 
       <section class="card detail-head">
         <span class="course-cover detail-cover">
-          <span class="cover-emoji" aria-hidden="true">{{ course.cover }}</span>
-          <span class="duration">约 {{ course.durationMin }} 分钟</span>
+          <img v-if="course.coverUrl" class="cover-img" :src="course.coverUrl" :alt="course.title" />
+          <span v-else class="cover-emoji" aria-hidden="true">{{ course.cover }}</span>
+          <span class="duration">{{ course.durationLabel }}</span>
         </span>
         <div class="detail-info">
-          <p class="eyebrow">{{ course.category }} · {{ course.level }}</p>
+          <p class="eyebrow">{{ [course.category, course.level].filter(Boolean).join(' · ') }}</p>
           <h1>{{ course.title }}</h1>
           <p class="muted">{{ course.summary }}</p>
           <div class="tag-chip-row detail-tags">
             <span class="tag-chip is-cyan">{{ course.category }}</span>
-            <span class="tag-chip">{{ course.level }}</span>
+            <span v-if="course.level" class="tag-chip">{{ course.level }}</span>
             <span v-for="tag in course.tags" :key="tag" class="tag-chip is-off">{{ tag }}</span>
           </div>
         </div>
@@ -172,6 +184,14 @@ function normalizeCheckins(raw: string | null): CheckinMap {
       </section>
     </template>
 
+    <!-- 加载中：内容来自 ContentService（可能等待后端接口） -->
+    <template v-else-if="!courseLoaded">
+      <div class="empty-state">
+        <div class="empty-ic" aria-hidden="true">⏳</div>
+        <p>正在加载课程…</p>
+      </div>
+    </template>
+
     <!-- 空态：课程不存在 -->
     <template v-else>
       <div class="empty-state">
@@ -190,6 +210,8 @@ function normalizeCheckins(raw: string | null): CheckinMap {
 .detail-head { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; align-items: center; }
 .detail-cover { height: 170px; font-size: 60px; }
 .cover-emoji { line-height: 1; }
+/* 远端下发 CDN 封面时用图片替代 emoji 占位（内置兜底数据无 coverUrl） */
+.cover-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; }
 .detail-info { min-width: 0; }
 .detail-info h1 { margin: 6px 0 8px; font-size: clamp(20px, 3vw, 26px); color: var(--c-ink); }
 .detail-info .muted { font-size: 13px; line-height: 1.7; }

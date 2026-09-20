@@ -38,6 +38,12 @@ head -c 4 "$NEW" | grep -q $'\x7fELF' || { echo "不是 ELF 可执行文件，�
 MIG_CHANGED=no
 if [ -n "$MIG_SRC" ]; then
   [ -d "$MIG_SRC" ] || { echo "找不到迁移目录: $MIG_SRC"; exit 1; }
+  # 源目录不能就是目标目录：这条路径曾经真的踩过——把 /srv/app/migrations 同时当源和目标传进来，
+  # 脚本"先删目标再拷源"就把线上迁移文件删空了（当时同步阶段还在替换二进制之前，服务未受损）。
+  if [ "$(readlink -f "$MIG_SRC")" = "$(readlink -f "$MIG_DIR")" ]; then
+    echo "迁移源目录与目标目录相同（$MIG_DIR）：请传一个独立的源目录（例如 /tmp/migrations）"
+    exit 1
+  fi
   COUNT=$(find "$MIG_SRC" -maxdepth 1 -name '*.sql' | wc -l)
   [ "$COUNT" -gt 0 ] || { echo "迁移目录里没有 .sql 文件: $MIG_SRC"; exit 1; }
   echo "[backend] 迁移文件检查: $COUNT 个 .sql"
@@ -45,12 +51,18 @@ if [ -n "$MIG_SRC" ]; then
     head -c 3 "$f" | grep -q $'\xef\xbb\xbf' && { echo "迁移文件带 UTF-8 BOM，拒绝安装: $f"; exit 1; }
     [ -s "$f" ] || { echo "迁移文件为空，拒绝安装: $f"; exit 1; }
   done
+  # 先完整拷到暂存目录，再动目标；这样即使后面任何一步失败，暂存里仍有一份完整副本可用于回滚。
+  MIG_STAGE=$(mktemp -d)
+  cp -f "$MIG_SRC"/*.sql "$MIG_STAGE/"
+  STAGED=$(find "$MIG_STAGE" -maxdepth 1 -name '*.sql' | wc -l)
+  [ "$STAGED" -eq "$COUNT" ] || { echo "暂存迁移文件数不符（$STAGED/$COUNT），拒绝继续"; rm -rf "$MIG_STAGE"; exit 1; }
   rm -rf "$MIG_BACKUP"
   [ -d "$MIG_DIR" ] && cp -a "$MIG_DIR" "$MIG_BACKUP"
   mkdir -p "$MIG_DIR"
   find "$MIG_DIR" -maxdepth 1 -name '*.sql' -delete
-  cp -f "$MIG_SRC"/*.sql "$MIG_DIR/"
+  cp -f "$MIG_STAGE"/*.sql "$MIG_DIR/"
   chmod 644 "$MIG_DIR"/*.sql
+  rm -rf "$MIG_STAGE"
   MIG_CHANGED=yes
   echo "[backend] 已同步迁移: $(ls -1 "$MIG_DIR"/*.sql | xargs -n1 basename | tr '\n' ' ')"
 fi

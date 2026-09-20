@@ -15,14 +15,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
 
 	"zhiwellcare/backend/internal/auth"
+	"zhiwellcare/backend/internal/cache"
 	"zhiwellcare/backend/internal/config"
 	"zhiwellcare/backend/internal/httpapi"
+	"zhiwellcare/backend/internal/objectstore"
 	"zhiwellcare/backend/internal/store"
 	"zhiwellcare/backend/internal/wechat"
 )
@@ -52,7 +55,14 @@ func main() {
 			log.Fatalf("[db] 迁移失败: %v", err)
 		}
 		data = pgStore
-		slog.Info("数据库就绪", "driver", "postgresql")
+		// 启动即打印「实际连到哪个库」（不含口令）：
+		// APP_DB_URL 被误清空、godotenv 从 .env 回填正式库这类事故可以一眼看见。
+		dbHost, dbName := store.DBTarget(cfg.DBURL)
+		slog.Info("数据库已连接", "driver", "postgresql", "host", dbHost, "database", dbName)
+		if !isLocalDBHost(dbHost) {
+			slog.Warn("数据库不在本机，请确认 APP_DB_URL 指向的环境符合预期（避免误连正式库）",
+				"host", dbHost, "database", dbName)
+		}
 	} else {
 		data = store.NewMemory()
 		slog.Warn("数据库未配置 APP_DB_URL，使用内存存储（演示模式，重启数据丢失）")
@@ -62,6 +72,32 @@ func main() {
 	bootstrapAdmin(ctx, data, cfg.AdminBootstrapPhone)
 
 	manager := auth.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL)
+
+	// 缓存：Redis 优先（多实例共享限流/会话/设备映射），未配置或连不上时回退进程内实现。
+	cacheStore := cache.New(ctx, cfg.RedisURL, slog.Default())
+	defer func() { _ = cacheStore.Close() }()
+	sessions := cache.NewSessions(cacheStore)
+	devices := cache.NewDevices(cacheStore, cfg.DeviceCacheTTL)
+	slog.Info("缓存就绪", "backend", cacheStore.Kind())
+
+	// 对象存储：S3 优先，未配置或不可用时回退本地磁盘（客户端流程一致）。
+	assets, err := objectstore.New(ctx, objectstore.Options{
+		Endpoint:     cfg.S3Endpoint,
+		Region:       cfg.S3Region,
+		AccessKey:    cfg.S3AccessKey,
+		SecretKey:    cfg.S3SecretKey,
+		Bucket:       cfg.S3Bucket,
+		UseSSL:       cfg.S3UseSSL,
+		LocalDir:     cfg.S3LocalDir,
+		PublicBase:   cfg.CDNBase,
+		LocalBaseURL: cfg.PublicBaseURL,
+		SignSecret:   cfg.UploadSignSecret,
+	}, slog.Default())
+	if err != nil {
+		log.Fatalf("[storage] %v", err)
+	}
+	slog.Info("对象存储就绪", "backend", assets.Kind())
+
 	var exchange httpapi.WeChatExchange
 	if cfg.WeChatAppID != "" && cfg.WeChatSecret != "" {
 		client := wechat.NewClient(cfg.WeChatAppID, cfg.WeChatSecret)
@@ -76,6 +112,10 @@ func main() {
 		Store:     data,
 		Manager:   manager,
 		WeChat:    exchange,
+		Cache:     cacheStore,
+		Sessions:  sessions,
+		Devices:   devices,
+		Assets:    assets,
 		StartedAt: time.Now(),
 	})
 
@@ -101,6 +141,16 @@ func main() {
 	defer cancel()
 	_ = server.Shutdown(shutdownCtx)
 	slog.Info("服务已优雅退出")
+}
+
+// isLocalDBHost 判断数据库主机是否为本机（localhost / 回环地址 / 未指定即 Unix socket）。
+// 供启动日志决定是否发出「可能误连正式库」的醒目告警。
+func isLocalDBHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "", "localhost", "127.0.0.1", "::1", "[::1]":
+		return true
+	}
+	return false
 }
 
 // bootstrapAdmin 启动时把指定手机号用户提升为管理员（RBAC 初始化；手机号可为空）。

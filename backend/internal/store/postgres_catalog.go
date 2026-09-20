@@ -6,25 +6,51 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"zhiwellcare/backend/internal/model"
 )
 
+// jsonOrEmptyObject 空 JSON 归一为 {}（列类型 jsonb NOT NULL）。
+func jsonOrEmptyObject(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
+// emptyIfNil 数组列（NOT NULL DEFAULT '{}'）不接受 NULL：nil 归一为空切片。
+func emptyIfNil(items []string) []string {
+	if items == nil {
+		return []string{}
+	}
+	return items
+}
+
+// emptyIntsIfNil 同上，用于 int[] 列。
+func emptyIntsIfNil(items []int) []int {
+	if items == nil {
+		return []int{}
+	}
+	return items
+}
+
 // ---------- 设备型号 ----------
 
 const deviceModelColumns = `model_id, name, manufacturer, category, description, capability_tags, supported_handle_tags,
-	name_patterns, protocol, min_app_version, firmware_updatable, icon, status, created_at, updated_at`
+	name_patterns, protocol, min_app_version, firmware_updatable, icon, status, config, created_at, updated_at`
 
 func scanDeviceModel(row rowScanner) (*model.DeviceModel, error) {
 	var item model.DeviceModel
 	err := row.Scan(&item.ModelID, &item.Name, &item.Manufacturer, &item.Category, &item.Description,
 		&item.CapabilityTags, &item.SupportedHandleTags, &item.NamePatterns, &item.Protocol, &item.MinAppVersion,
-		&item.FirmwareUpdatable, &item.Icon, &item.Status, &item.CreatedAt, &item.UpdatedAt)
+		&item.FirmwareUpdatable, &item.Icon, &item.Status, &item.Config, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	item.Config = jsonOrEmptyObject(item.Config)
 	return &item, nil
 }
 
@@ -62,18 +88,18 @@ func (p *Postgres) GetDeviceModel(ctx context.Context, modelID string) (*model.D
 func (p *Postgres) UpsertDeviceModel(ctx context.Context, item model.DeviceModel) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO device_models (model_id, name, manufacturer, category, description, capability_tags,
-			supported_handle_tags, name_patterns, protocol, min_app_version, firmware_updatable, icon, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,COALESCE(NULLIF($13,''),'on'))
+			supported_handle_tags, name_patterns, protocol, min_app_version, firmware_updatable, icon, status, config)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,COALESCE(NULLIF($13,''),'on'),$14::jsonb)
 		ON CONFLICT (model_id) DO UPDATE SET
 			name=EXCLUDED.name, manufacturer=EXCLUDED.manufacturer, category=EXCLUDED.category,
 			description=EXCLUDED.description, capability_tags=EXCLUDED.capability_tags,
 			supported_handle_tags=EXCLUDED.supported_handle_tags, name_patterns=EXCLUDED.name_patterns,
 			protocol=EXCLUDED.protocol, min_app_version=EXCLUDED.min_app_version,
 			firmware_updatable=EXCLUDED.firmware_updatable, icon=EXCLUDED.icon,
-			status=EXCLUDED.status, updated_at=now()`,
-		item.ModelID, item.Name, item.Manufacturer, item.Category, item.Description, item.CapabilityTags,
-		item.SupportedHandleTags, item.NamePatterns, item.Protocol, item.MinAppVersion,
-		item.FirmwareUpdatable, item.Icon, item.Status,
+			status=EXCLUDED.status, config=EXCLUDED.config, updated_at=now()`,
+		item.ModelID, item.Name, item.Manufacturer, item.Category, item.Description, emptyIfNil(item.CapabilityTags),
+		emptyIfNil(item.SupportedHandleTags), emptyIfNil(item.NamePatterns), item.Protocol, item.MinAppVersion,
+		item.FirmwareUpdatable, item.Icon, item.Status, jsonOrEmptyObject(item.Config),
 	)
 	return err
 }
@@ -103,16 +129,17 @@ func (p *Postgres) SetDeviceModelStatus(ctx context.Context, modelID, status str
 // ---------- 游戏目录 ----------
 
 const gameColumns = `game_id, name, summary, required_tags, duration_presets_min, resource_version, resource_url,
-	status, gray_batch, gray_ratio, category_label, play_mode, created_at, updated_at`
+	status, gray_batch, gray_ratio, category_label, play_mode, config, created_at, updated_at`
 
 func scanGame(row rowScanner) (*model.GameCatalogItem, error) {
 	var item model.GameCatalogItem
 	err := row.Scan(&item.GameID, &item.Name, &item.Summary, &item.RequiredTags, &item.DurationPresetsMin,
 		&item.ResourceVersion, &item.ResourceURL, &item.Status, &item.GrayBatch, &item.GrayRatio,
-		&item.CategoryLabel, &item.PlayMode, &item.CreatedAt, &item.UpdatedAt)
+		&item.CategoryLabel, &item.PlayMode, &item.Config, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	item.Config = jsonOrEmptyObject(item.Config)
 	return &item, nil
 }
 
@@ -150,17 +177,17 @@ func (p *Postgres) GetGame(ctx context.Context, gameID string) (*model.GameCatal
 func (p *Postgres) UpsertGame(ctx context.Context, item model.GameCatalogItem) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO game_catalog (game_id, name, summary, required_tags, duration_presets_min, resource_version,
-			resource_url, status, gray_batch, gray_ratio, category_label, play_mode)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE(NULLIF($8,''),'off'),$9,$10,$11,$12)
+			resource_url, status, gray_batch, gray_ratio, category_label, play_mode, config)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE(NULLIF($8,''),'off'),$9,$10,$11,$12,$13::jsonb)
 		ON CONFLICT (game_id) DO UPDATE SET
 			name=EXCLUDED.name, summary=EXCLUDED.summary, required_tags=EXCLUDED.required_tags,
 			duration_presets_min=EXCLUDED.duration_presets_min, resource_version=EXCLUDED.resource_version,
 			resource_url=EXCLUDED.resource_url, status=EXCLUDED.status, gray_batch=EXCLUDED.gray_batch,
 			gray_ratio=EXCLUDED.gray_ratio, category_label=EXCLUDED.category_label,
-			play_mode=EXCLUDED.play_mode, updated_at=now()`,
-		item.GameID, item.Name, item.Summary, item.RequiredTags, item.DurationPresetsMin,
+			play_mode=EXCLUDED.play_mode, config=EXCLUDED.config, updated_at=now()`,
+		item.GameID, item.Name, item.Summary, emptyIfNil(item.RequiredTags), emptyIntsIfNil(item.DurationPresetsMin),
 		item.ResourceVersion, item.ResourceURL, item.Status, item.GrayBatch, item.GrayRatio,
-		item.CategoryLabel, item.PlayMode,
+		item.CategoryLabel, item.PlayMode, jsonOrEmptyObject(item.Config),
 	)
 	return err
 }
@@ -189,20 +216,61 @@ func (p *Postgres) SetGameStatus(ctx context.Context, gameID, status string) err
 
 // ---------- 训练摘要 ----------
 
+// SaveTrainingRecord 落训练摘要。
+//
+// training_records 是按 completed_at 的 RANGE 分区表（见 migrations/003），
+// 分区表的唯一索引必须包含分区键，因此幂等键为 (record_id, completed_at)：
+// 客户端重试时 recordId 与 completedAt 不变 → ON CONFLICT DO NOTHING 只落 1 行。
 func (p *Postgres) SaveTrainingRecord(ctx context.Context, record model.TrainingSummary) error {
 	stats := record.Statistics
 	if len(stats) == 0 {
 		stats = json.RawMessage(`{}`)
 	}
+	// 写入前保证该月份分区存在（进程内按年月去重，正常只多一次往返）。
+	p.ensureRecordPartition(ctx, record.CompletedAt)
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO training_records (record_id, user_id, game_id, game_name, device_model_id, device_model_name,
 			capability_tags, statistics, client_version, completed_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (record_id) DO NOTHING`,
+		ON CONFLICT (record_id, completed_at) DO NOTHING`,
 		record.RecordID, record.UserID, record.GameID, record.GameName, record.DeviceModelID,
-		record.DeviceModelName, record.CapabilityTags, stats, record.ClientVersion, record.CompletedAt,
+		record.DeviceModelName, emptyIfNil(record.CapabilityTags), stats, record.ClientVersion, record.CompletedAt,
 	)
 	return err
+}
+
+// ensureRecordPartition 按需创建月分区；失败不阻断写入（DEFAULT 分区兜底）。
+func (p *Postgres) ensureRecordPartition(ctx context.Context, at time.Time) {
+	if at.IsZero() {
+		return
+	}
+	month := at.UTC().Format("2006-01")
+	if _, loaded := p.partitionEnsured.LoadOrStore(month, struct{}{}); loaded {
+		return
+	}
+	if _, err := p.pool.Exec(ctx, `SELECT training_records_ensure_partition($1)`, at); err != nil {
+		// 允许下次重试；DEFAULT 分区保证本次写入不会失败。
+		p.partitionEnsured.Delete(month)
+	}
+}
+
+func (p *Postgres) GetTrainingRecord(ctx context.Context, recordID string) (*model.TrainingSummary, error) {
+	var record model.TrainingSummary
+	var userID *string
+	err := p.pool.QueryRow(ctx, `SELECT id, record_id, user_id::text, game_id, game_name, device_model_id, device_model_name,
+		capability_tags, statistics, client_version, completed_at, uploaded_at
+		FROM training_records WHERE record_id = $1 ORDER BY completed_at DESC LIMIT 1`, recordID).
+		Scan(&record.ID, &record.RecordID, &userID, &record.GameID, &record.GameName,
+			&record.DeviceModelID, &record.DeviceModelName, &record.CapabilityTags, &record.Statistics,
+			&record.ClientVersion, &record.CompletedAt, &record.UploadedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	record.UserID = userID
+	return &record, nil
 }
 
 func (p *Postgres) ListTrainingRecords(ctx context.Context, filter TrainingRecordFilter) ([]model.TrainingSummary, int64, error) {

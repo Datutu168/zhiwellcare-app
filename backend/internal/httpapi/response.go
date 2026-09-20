@@ -21,6 +21,11 @@ func ok(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, Envelope{Code: 0, Message: "ok", Data: data})
 }
 
+// created 返回 201（新建资源，如资产登记）。
+func created(c *gin.Context, data any) {
+	c.JSON(http.StatusCreated, Envelope{Code: 0, Message: "ok", Data: data})
+}
+
 func fail(c *gin.Context, status int, message string) {
 	c.JSON(status, Envelope{Code: status, Message: message, Data: nil})
 }

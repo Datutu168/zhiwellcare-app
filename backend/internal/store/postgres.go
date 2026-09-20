@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,6 +21,9 @@ import (
 // Postgres 基于 pgxpool 的 PostgreSQL 存储实现。
 type Postgres struct {
 	pool *pgxpool.Pool
+	// partitionEnsured 记录本进程已确保存在的训练记录月分区（YYYY-MM），
+	// 避免每次写入都调用一次建分区的 DDL。
+	partitionEnsured sync.Map
 }
 
 func NewPostgres(ctx context.Context, dbURL string) (*Postgres, error) {
@@ -37,6 +41,18 @@ func NewPostgres(ctx context.Context, dbURL string) (*Postgres, error) {
 func (p *Postgres) Close() { p.pool.Close() }
 
 func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
+
+// DBTarget 从连接串解析出「主机 + 库名」（不含口令），用于启动日志与事故排查。
+//
+// 目的：像 APP_DB_URL 被误清空、godotenv 又从 .env 回填了正式库这类事故，
+// 启动日志里一眼就能看到实际连的是哪个库，而不是等到写坏数据才发现。
+func DBTarget(dbURL string) (host, database string) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return "", ""
+	}
+	return cfg.ConnConfig.Host, cfg.ConnConfig.Database
+}
 
 // RunMigrations 幂等执行 migrations/*.sql（按文件名顺序），可在每次启动调用。
 func (p *Postgres) RunMigrations(ctx context.Context, dir string) error {
@@ -164,15 +180,35 @@ func (p *Postgres) SetUserStatus(ctx context.Context, id string, status int) err
 	return nil
 }
 
+// SetUserRole 兼容旧的角色字段写入（如启动引导 bootstrapAdmin）。
+// 同时同步 user_roles：users.role 只是 admin 角色的派生标记（RBAC 事实来源是 user_roles）。
 func (p *Postgres) SetUserRole(ctx context.Context, id, role string) error {
-	tag, err := p.pool.Exec(ctx, `UPDATE users SET role=$2, updated_at=now() WHERE id=$1`, id, role)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `UPDATE users SET role=$2, updated_at=now() WHERE id=$1`, id, role)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrUserNotFound
 	}
-	return nil
+	if role == model.RoleAdmin {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO user_roles (user_id, role_code) VALUES ($1,'admin') ON CONFLICT (user_id, role_code) DO NOTHING`,
+			id); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM user_roles WHERE user_id=$1 AND role_code='admin'`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *Postgres) Save(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {

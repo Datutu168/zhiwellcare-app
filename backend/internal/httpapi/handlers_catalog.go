@@ -7,7 +7,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"zhiwellcare/backend/internal/config"
 	"zhiwellcare/backend/internal/model"
+	"zhiwellcare/backend/internal/objectstore"
 	"zhiwellcare/backend/internal/store"
 )
 
@@ -29,7 +31,35 @@ func containsAll(tags, required []string) bool {
 }
 
 // catalogHandler 承载“面向 APP 的公开目录”与“后台运营 CRUD”。
-type catalogHandler struct{ store store.Combined }
+type catalogHandler struct {
+	store  store.Combined
+	assets objectstore.Store
+	cfg    *config.Config
+}
+
+// fillResourceAssets 目录条目里 resourceUrl 为空、但资产库存在
+// 「该 gameId + resourceVersion 的 published 游戏资源」时，回填 CDN/预签名地址
+// 与 sha256/size（前端据此下载并校验资源包）。
+func (h *catalogHandler) fillResourceAssets(c *gin.Context, games []model.GameCatalogItem) []model.GameCatalogItem {
+	for index := range games {
+		game := &games[index]
+		if game.ResourceURL != "" || game.GameID == "" {
+			continue
+		}
+		asset, err := h.store.FindPublishedAsset(c, model.AssetKindGame, game.GameID, game.ResourceVersion)
+		if err != nil || asset == nil {
+			continue
+		}
+		url, err := assetObjectURL(c.Request.Context(), h.assets, h.cfg, asset.ObjectKey)
+		if err != nil || url == "" {
+			continue
+		}
+		game.ResourceURL = url
+		game.ResourceSha256 = asset.SHA256
+		game.ResourceSize = asset.Size
+	}
+	return games
+}
 
 // ---------- 公开目录（APP 读取，无需登录） ----------
 
@@ -48,7 +78,7 @@ func (h *catalogHandler) publicGames(c *gin.Context) {
 		mapStoreError(c, err)
 		return
 	}
-	ok(c, items)
+	ok(c, h.fillResourceAssets(c, items))
 }
 
 // deviceGames 返回某型号可用游戏：设备标签 ⊇ 游戏所需标签（匹配公式）。
@@ -74,7 +104,7 @@ func (h *catalogHandler) deviceGames(c *gin.Context) {
 			matched = append(matched, game)
 		}
 	}
-	ok(c, matched)
+	ok(c, h.fillResourceAssets(c, matched))
 }
 
 // ---------- 设备型号管理（admin） ----------

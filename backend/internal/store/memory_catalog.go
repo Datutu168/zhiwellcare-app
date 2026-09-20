@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sort"
 	"time"
 
@@ -41,6 +42,10 @@ func (m *Memory) UpsertDeviceModel(_ context.Context, item model.DeviceModel) er
 	defer m.mu.Unlock()
 	if item.Status == "" {
 		item.Status = "on"
+	}
+	// 与 PostgreSQL 的 jsonb NOT NULL DEFAULT '{}' 行为保持一致
+	if len(item.Config) == 0 {
+		item.Config = json.RawMessage(`{}`)
 	}
 	item.CreatedAt = time.Now()
 	item.UpdatedAt = time.Now()
@@ -100,6 +105,10 @@ func (m *Memory) UpsertGame(_ context.Context, item model.GameCatalogItem) error
 	if item.Status == "" {
 		item.Status = "off"
 	}
+	// 与 PostgreSQL 的 jsonb NOT NULL DEFAULT '{}' 行为保持一致
+	if len(item.Config) == 0 {
+		item.Config = json.RawMessage(`{}`)
+	}
 	item.CreatedAt = time.Now()
 	item.UpdatedAt = time.Now()
 	m.games[item.GameID] = &item
@@ -130,9 +139,18 @@ func (m *Memory) SetGameStatus(_ context.Context, gameID, status string) error {
 
 // ---------- 训练摘要（内存演示） ----------
 
+// SaveTrainingRecord 落训练摘要。
+//
+// 幂等语义与 PostgreSQL 分区表保持一致：同 (recordId, completedAt) 重复上报只保留 1 行
+// （分区表复合主键 (record_id, completed_at) + ON CONFLICT DO NOTHING）。
 func (m *Memory) SaveTrainingRecord(_ context.Context, record model.TrainingSummary) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, existing := range m.records {
+		if existing.RecordID == record.RecordID && existing.CompletedAt.Equal(record.CompletedAt) {
+			return nil
+		}
+	}
 	m.nextRecord++
 	record.ID = m.nextRecord
 	record.UploadedAt = time.Now()
@@ -167,6 +185,28 @@ func (m *Memory) ListTrainingRecords(_ context.Context, filter TrainingRecordFil
 		end = len(matched)
 	}
 	return matched[start:end], int64(len(matched)), nil
+}
+
+// GetTrainingRecord 按 recordId 返回单条摘要（同 id 多条时取完成时间最新的一条）；
+// 不存在返回 ErrNotFound。
+func (m *Memory) GetTrainingRecord(_ context.Context, recordID string) (*model.TrainingSummary, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var found *model.TrainingSummary
+	for index := range m.records {
+		record := m.records[index]
+		if record.RecordID != recordID {
+			continue
+		}
+		if found == nil || record.CompletedAt.After(found.CompletedAt) {
+			copyRecord := record
+			found = &copyRecord
+		}
+	}
+	if found == nil {
+		return nil, ErrNotFound
+	}
+	return found, nil
 }
 
 func (m *Memory) DashboardStats(_ context.Context) (*model.DashboardStats, error) {
@@ -222,13 +262,13 @@ func (m *Memory) GetOrCreateByOAuth(_ context.Context, params OAuthParams) (*mod
 	}
 	raw := sha256.Sum256([]byte(params.Provider + params.OpenID + time.Now().String()))
 	user := &model.User{
-		ID:        hex.EncodeToString(raw[:12]),
+		ID:           hex.EncodeToString(raw[:12]),
 		PasswordHash: "",
-		Nickname:  params.Nickname,
-		Role:      "user",
-		Status:    1,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Nickname:     params.Nickname,
+		Role:         "user",
+		Status:       1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 	m.byID[user.ID] = user
 	m.oauth[params.Provider+"|"+params.OpenID] = user.ID

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"zhiwellcare/backend/internal/auth"
+	"zhiwellcare/backend/internal/cache"
 	"zhiwellcare/backend/internal/model"
 	"zhiwellcare/backend/internal/store"
 	"zhiwellcare/backend/internal/wechat"
@@ -25,6 +26,8 @@ type authHandler struct {
 	manager    *auth.TokenManager
 	refreshTTL time.Duration
 	exchange   WeChatExchange
+	// sessions 访问令牌吊销名单；nil 时登出只作废刷新令牌。
+	sessions *cache.Sessions
 }
 
 type registerRequest struct {
@@ -183,6 +186,15 @@ func (h *authHandler) logout(c *gin.Context) {
 	}
 	if raw := trimSpace(req.RefreshToken); raw != "" {
 		_ = h.store.Revoke(c, auth.HashRefreshToken(raw)) // 幂等：不存在也视为成功
+	}
+	// 访问令牌是 JWT（无状态），这里按剩余有效期登记进吊销名单，
+	// 让「已登出的令牌」立即失效而不是等到自然过期。
+	if h.sessions != nil {
+		if raw := bearerToken(c.GetHeader("Authorization")); raw != "" {
+			if claims, err := h.manager.ParseClaims(raw); err == nil {
+				_ = h.sessions.Revoke(c, cache.Fingerprint(raw), claims.RemainingTTL())
+			}
+		}
 	}
 	ok(c, gin.H{"loggedOut": true})
 }

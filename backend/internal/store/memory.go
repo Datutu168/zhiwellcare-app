@@ -26,10 +26,21 @@ type Memory struct {
 	nextRecord int64
 	oauth      map[string]string // provider|openid → userID
 	oauthUnion map[string]string // provider|unionid → userID
+
+	// RBAC / 配置中心 / 设备事实表 / 资产登记
+	roles      map[string]*model.Role
+	rolePerms  map[string]map[string]struct{} // roleCode → 权限码集合
+	userRoles  map[string]map[string]struct{} // userID → 角色码集合
+	configs    map[string]*model.AppConfigItem
+	whitelist  map[string]*model.DeviceWhitelistEntry
+	mappings   map[string]*model.DeviceMappingEntry
+	assets     map[int64]*model.Asset
+	assetOrder []int64
+	nextAsset  int64
 }
 
 func NewMemory() *Memory {
-	return &Memory{
+	m := &Memory{
 		users:      make(map[string]*model.User),
 		byID:       make(map[string]*model.User),
 		tokens:     make(map[string]*model.RefreshTokenRow),
@@ -37,6 +48,48 @@ func NewMemory() *Memory {
 		games:      make(map[string]*model.GameCatalogItem),
 		oauth:      make(map[string]string),
 		oauthUnion: make(map[string]string),
+		roles:      make(map[string]*model.Role),
+		rolePerms:  make(map[string]map[string]struct{}),
+		userRoles:  make(map[string]map[string]struct{}),
+		configs:    make(map[string]*model.AppConfigItem),
+		whitelist:  make(map[string]*model.DeviceWhitelistEntry),
+		mappings:   make(map[string]*model.DeviceMappingEntry),
+		assets:     make(map[int64]*model.Asset),
+	}
+	m.seedRBAC()
+	return m
+}
+
+// seedRBAC 播种权限点 / 内置角色 / 配置中心默认值（与迁移 003 一致）。
+func (m *Memory) seedRBAC() {
+	all := allPermissionCodes()
+	for _, seed := range builtinRoleSeeds {
+		perms := seed.Permissions
+		if len(perms) == 0 {
+			perms = all
+		}
+		set := make(map[string]struct{}, len(perms))
+		for _, code := range perms {
+			set[code] = struct{}{}
+		}
+		m.rolePerms[seed.Code] = set
+		m.roles[seed.Code] = &model.Role{
+			Code:        seed.Code,
+			Name:        seed.Name,
+			Description: seed.Description,
+			Builtin:     true,
+			Permissions: sortedKeys(set),
+			UserCount:   0,
+		}
+	}
+	now := time.Now()
+	for _, item := range appConfigSeeds {
+		m.configs[item.Key] = &model.AppConfigItem{
+			Key:         item.Key,
+			Value:       append([]byte(nil), item.Value...),
+			Description: item.Description,
+			UpdatedAt:   now,
+		}
 	}
 }
 
@@ -152,6 +205,12 @@ func (m *Memory) SetUserRole(_ context.Context, id, role string) error {
 	}
 	user.Role = role
 	user.UpdatedAt = time.Now()
+	// 同步 user_roles：users.role 只是 admin 角色的派生标记
+	if role == model.RoleAdmin {
+		m.grantRoleLocked(id, model.RoleAdmin)
+	} else {
+		m.revokeRoleLocked(id, model.RoleAdmin)
+	}
 	return nil
 }
 

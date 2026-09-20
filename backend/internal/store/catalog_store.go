@@ -26,26 +26,29 @@ type GameCatalogStore interface {
 
 // TrainingRecordFilter 训练记录查询过滤。
 type TrainingRecordFilter struct {
-	UserID    string
-	GameID    string
-	ModelID   string
-	Page      int // 从 1 开始
-	PageSize  int
+	UserID   string
+	GameID   string
+	ModelID  string
+	Page     int // 从 1 开始
+	PageSize int
 }
 
 // TrainingRecordStore 训练摘要。
 type TrainingRecordStore interface {
 	SaveTrainingRecord(ctx context.Context, record model.TrainingSummary) error
 	ListTrainingRecords(ctx context.Context, filter TrainingRecordFilter) (items []model.TrainingSummary, total int64, err error)
+	// GetTrainingRecord 按 recordId 返回单条摘要；不存在返回 ErrNotFound。
+	// 训练采样文件上传需要校验记录归属，故单独暴露。
+	GetTrainingRecord(ctx context.Context, recordID string) (*model.TrainingSummary, error)
 	DashboardStats(ctx context.Context) (*model.DashboardStats, error)
 }
 
 // OAuthParams 第三方身份登录/绑定的建号参数。
 type OAuthParams struct {
-	Provider  string
-	OpenID    string
-	UnionID   *string
-	Nickname  string
+	Provider string
+	OpenID   string
+	UnionID  *string
+	Nickname string
 }
 
 // OAuthStore 第三方身份。
@@ -68,4 +71,8 @@ type Combined interface {
 	GameCatalogStore
 	TrainingRecordStore
 	OAuthStore
+	RBACStore
+	ConfigStore
+	DeviceRegistryStore
+	AssetStore
 }

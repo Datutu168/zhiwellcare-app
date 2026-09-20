@@ -28,7 +28,9 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     if (response.status === 401) adminToken.clear()
     throw new ApiError(response.status, envelope?.message || `请求失败（${response.status}）`)
   }
-  return envelope!.data as T
+  // 兼容 204 / 空响应体（如 DELETE 成功无 body），避免 envelope 为 null 时抛 TypeError 导致页面白屏。
+  if (envelope === null) return undefined as T
+  return envelope.data as T
 }
 
 export const api = {

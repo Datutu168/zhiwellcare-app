@@ -2,8 +2,10 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAdminAuthStore } from '../stores/adminAuth'
+import { useAdminPermissionsStore } from '../stores/adminPermissions'
 
 const auth = useAdminAuthStore()
+const perms = useAdminPermissionsStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -27,6 +29,16 @@ async function submit(): Promise<void> {
   loading.value = true
   try {
     await auth.login(phoneValue, password.value)
+    // 登录成功后立即拉权限：role=admin 或拥有任意权限码才允许进入后台。
+    // 权限接口未就绪（loaded=false）时放行，避免后端未上线就完全无法登录。
+    perms.reset()
+    await perms.load(true)
+    if (perms.loaded && !perms.isSuperAdmin && perms.permissions.length === 0) {
+      auth.logout()
+      perms.reset()
+      auth.error = '该账号没有后台访问权限，请联系管理员分配角色'
+      return
+    }
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     await router.replace(redirect.startsWith('/') ? redirect : '/dashboard')
   } catch {

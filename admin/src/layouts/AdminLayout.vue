@@ -1,24 +1,36 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
+import { ADMIN_MENUS } from '../constants/permissions'
 import { useAdminAuthStore } from '../stores/adminAuth'
+import { useAdminPermissionsStore } from '../stores/adminPermissions'
 
 const auth = useAdminAuthStore()
+const perms = useAdminPermissionsStore()
 const route = useRoute()
 const router = useRouter()
 
-const menus = [
-  { path: '/dashboard', label: '仪表盘', icon: '📊' },
-  { path: '/devices', label: '设备型号', icon: '⌚' },
-  { path: '/games', label: '游戏目录', icon: '🎯' },
-  { path: '/users', label: '用户管理', icon: '👥' },
-  { path: '/records', label: '训练记录', icon: '📈' },
-]
+onMounted(() => {
+  void perms.load()
+})
 
-const activeMenu = computed(() => menus.find((item) => route.path.startsWith(item.path))?.path ?? '/dashboard')
+/** 无权限的菜单直接不渲染；权限接口未就绪时 allows 放行（后端仍会 403 兜底）。 */
+const menus = computed(() => ADMIN_MENUS.filter((menu) => perms.allows(menu.permission)))
+
+const activeMenu = computed(() => {
+  const exact = menus.value.find((menu) => route.path === menu.path)
+  if (exact) return exact.path
+  const nested = menus.value
+    .filter((menu) => route.path.startsWith(`${menu.path}/`))
+    .sort((a, b) => b.path.length - a.path.length)[0]
+  return nested?.path ?? ''
+})
+
+const pageTitle = computed(() => route.meta.title ?? menus.value.find((m) => m.path === activeMenu.value)?.label ?? '')
 
 function logout(): void {
   auth.logout()
+  perms.reset()
   void router.replace('/login')
 }
 </script>
@@ -46,11 +58,12 @@ function logout(): void {
     </el-aside>
     <el-container>
       <el-header class="header">
-        <h2>{{ menus.find((item) => item.path === activeMenu)?.label ?? '' }}</h2>
+        <h2>{{ pageTitle }}</h2>
         <el-dropdown @command="logout">
           <span class="user">
             <el-avatar :size="30" style="background: #0436a7">{{ (auth.user?.nickname || '管').slice(0, 1) }}</el-avatar>
             <span class="user-name">{{ auth.user?.nickname || auth.user?.phoneMasked || '管理员' }}</span>
+            <span v-if="perms.roles.length" class="user-role">{{ perms.roles.join('/') }}</span>
             <span class="caret">⌄</span>
           </span>
           <template #dropdown>
@@ -61,6 +74,14 @@ function logout(): void {
         </el-dropdown>
       </el-header>
       <el-main class="main">
+        <el-alert
+          v-if="perms.error"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="perm-alert"
+          :title="`权限信息加载失败（${perms.error}）：菜单暂全部显示，具体操作仍由后端校验，越权会返回 403。`"
+        />
         <RouterView />
       </el-main>
     </el-container>
@@ -76,7 +97,7 @@ function logout(): void {
 .brand-text { display: grid; line-height: 1.3; }
 .brand-text strong { font-size: 16px; }
 .brand-text small { color: #8593a8; font-size: 12px; }
-.menu { border-right: 0; flex: 1; }
+.menu { border-right: 0; flex: 1; overflow-y: auto; }
 .menu-ic { margin-right: 8px; }
 .aside-foot { padding: 12px 16px; }
 .to-app { font-size: 13px; color: #0436a7; text-decoration: none; }
@@ -86,6 +107,8 @@ function logout(): void {
 .header h2 { font-size: 17px; margin: 0; }
 .user { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .user-name { font-size: 14px; }
+.user-role { font-size: 11px; color: #0436a7; background: #eef3fc; border-radius: 8px; padding: 1px 6px; }
 .caret { color: #8593a8; font-size: 12px; }
 .main { background: #f3f6fb; padding: 18px; }
+.perm-alert { margin-bottom: 14px; }
 </style>

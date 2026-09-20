@@ -17,6 +17,9 @@ const notes = await readNotes(options.notes)
 const publishedAt = options.publishedAt ?? new Date().toISOString()
 const output = resolve(root, options.output ?? 'release-output/android-latest.json')
 
+// 下载地址前缀：UPDATE_ASSET_BASE 可指向自有域名 / COS / CDN；未配置时回退 GitHub Releases。
+const assetBase = (process.env.UPDATE_ASSET_BASE ?? 'https://github.com/NovSyang/zhiwellcare-app/releases/download').replace(/\/+$/, '')
+
 const manifest = {
   schemaVersion: 1,
   version: release.productVersion,
@@ -25,7 +28,7 @@ const manifest = {
   publishedAt,
   notes,
   apk: {
-    url: `https://github.com/NovSyang/zhiwellcare-app/releases/download/v${release.productVersion}/${encodeURIComponent(apkName)}`,
+    url: `${assetBase}/v${release.productVersion}/${encodeURIComponent(apkName)}`,
     sha256,
     size: apkStat.size,
   },

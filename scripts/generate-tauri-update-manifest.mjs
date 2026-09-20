@@ -19,6 +19,9 @@ const publishedAt = options.publishedAt ?? new Date().toISOString()
 const output = resolve(root, options.output ?? 'release-output/latest.json')
 const artifactName = basename(artifactPath)
 
+// 下载地址前缀：UPDATE_ASSET_BASE 可指向自有域名 / COS / CDN；未配置时回退 GitHub Releases。
+const assetBase = (process.env.UPDATE_ASSET_BASE ?? 'https://github.com/NovSyang/zhiwellcare-app/releases/download').replace(/\/+$/, '')
+
 const manifest = {
   version: release.productVersion,
   notes,
@@ -26,7 +29,7 @@ const manifest = {
   platforms: {
     'windows-x86_64': {
       signature,
-      url: `https://github.com/NovSyang/zhiwellcare-app/releases/download/v${release.productVersion}/${encodeURIComponent(artifactName)}`,
+      url: `${assetBase}/v${release.productVersion}/${encodeURIComponent(artifactName)}`,
     },
   },
 }

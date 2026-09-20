@@ -96,6 +96,45 @@ sudo bash deploy/nginx-sites/install.sh          # 幂等：备份 → nginx -t 
   （注意：PowerShell 中 `$env:APP_DB_URL=''` 会**删除**该变量，`godotenv` 随后可能回填 `.env` 里的连接串。）
 - 限流：`/auth/*` 已接 Redis 计数；生产仍建议前置网关级限流（按账号+IP）。
 
+### 8.1 一次后端发布的标准动作
+
+```bash
+# 开发机：交叉编译
+cd backend && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+  go build -trimpath -ldflags='-s -w' -o zhiwellcare-server ./cmd/server
+
+# 上传二进制与迁移目录，然后在服务器执行（迁移目录可省略，但强烈建议一起传）
+scp zhiwellcare-server ubuntu@<host>:/tmp/
+scp -r migrations ubuntu@<host>:/tmp/migrations
+ssh ubuntu@<host> 'sudo bash /srv/app/backend-release.sh /tmp/zhiwellcare-server /tmp/migrations'
+```
+
+`deploy/backend-release.sh` 的每一步都必须过，任一失败会**连迁移一起回滚**：
+
+1. 二进制必须是 ELF；迁移文件不得为空、不得带 UTF-8 BOM；
+2. 同步 `/srv/app/migrations`（旧目录备份为 `migrations.prev`）；
+3. 重启 → `systemctl is-active` → `GET /healthz`；
+4. **探测依赖 schema 的公开接口** `/api/v1/catalog/courses`、`/api/v1/catalog/goods` 必须 200 —— 这一步专门抓「新二进制上了、迁移没传」这类"服务是活的、接口 500"的事故；
+5. 二进制自身在启动时校验 `store.RequiredMigrations`（见 `internal/store/postgres.go`），迁移文件缺失直接拒绝启动，不依赖人的自觉。
+
+发布后跑一遍上线检查（见 §8.2）。
+
+### 8.2 上线安全检查
+
+```bash
+sudo bash /srv/app/security-checklist.sh              # 只检查
+sudo bash /srv/app/security-checklist.sh --prune-secret   # 确认初始密码已失效时删掉明文文件
+```
+
+检查项：明文初始密码文件是否仍可登录、`.env` 与密钥备份权限是否 600、JWT 密钥是否为默认值/过短、
+数据库是否指向本机、`healthz` 的 `cache`/`storage` 是否真生效、启动日志是否清理过权限缓存、
+依赖 schema 的公开接口是否 200、备份定时任务与最近备份时效。存在 FAIL 时退出码为 1。
+
+**初始密码处置流程**：首次部署会生成 `/srv/app/admin-initial-password.txt`（600）。登录后台后用
+`PUT /api/v1/me/password`（界面入口：右上角用户菜单 → 修改密码）改掉初始密码，再用
+`security-checklist.sh --prune-secret` 删除该文件 —— 脚本用"文件里的密码还能不能登录"判定是否已改密，
+能登录就 FAIL，不会让明文凭据长期留在服务器上。
+
 ## 九、部署后自检清单（按此逐条确认，不要只看服务「起来了」）
 
 1. `GET /healthz` 的 `cache` 必须是 `redis`、`storage` 必须是 `s3`；显示 `memory`/`local` 说明配置没生效、已静默回退。
@@ -107,3 +146,6 @@ sudo bash deploy/nginx-sites/install.sh          # 幂等：备份 → nginx -t 
 7. `training_records` 写入不需要手工建分区：`training_records_ensure_partition()` 在插入前按需创建，DEFAULT 分区兜底；可用 `SELECT tableoid::regclass FROM training_records WHERE record_id='…'` 确认数据落在当月分区。
 8. **后台同源可用性**：以 `admin.zhiwellcare.com` 为 Host 请求 `POST /api/v1/auth/login` 必须返回 200 且 `Content-Type: application/json`（返回 405 或 HTML 说明该 vhost 漏了 `/api/` 反代，见 §7.1）。
 9. **权限缓存清理**：改动角色/权限的迁移或 `APP_ADMIN_BOOTSTRAP_PHONE` 触发管理员提升时，启动日志应出现 `权限缓存已清理 prefix=zwkl:rbac`，且随后用同一账号访问 `/api/v1/admin/*` 应为 200（不是 403）。
+10. **迁移齐全性**：新二进制启动时会校验 `migrations/` 是否含全部必需文件，缺文件直接退出（日志：`migrations 目录缺少必需文件`），此时是**漏传 SQL**，把迁移一起补上再发布，不要靠反复重启绕过。
+11. **改密接口可用**：`PUT /api/v1/me/password`（自带 token，无需 RBAC 权限点）用旧密码换新密码后，旧密码登录必须 401、新密码登录必须 200；随后按 §8.2 删掉明文初始密码文件。
+12. **上线安全检查无 FAIL**：`sudo bash /srv/app/security-checklist.sh` 退出码为 0（WARN 可接受，例如对象存储仍是 local）。

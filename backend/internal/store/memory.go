@@ -22,6 +22,8 @@ type Memory struct {
 	// 目录运营 / 训练摘要 / OAuth（演示模式支持后台接口联调）
 	devices    map[string]*model.DeviceModel
 	games      map[string]*model.GameCatalogItem
+	courses    map[string]*model.Course
+	goods      map[string]*model.MallGoods
 	records    []model.TrainingSummary
 	nextRecord int64
 	oauth      map[string]string // provider|openid → userID
@@ -46,6 +48,8 @@ func NewMemory() *Memory {
 		tokens:     make(map[string]*model.RefreshTokenRow),
 		devices:    make(map[string]*model.DeviceModel),
 		games:      make(map[string]*model.GameCatalogItem),
+		courses:    make(map[string]*model.Course),
+		goods:      make(map[string]*model.MallGoods),
 		oauth:      make(map[string]string),
 		oauthUnion: make(map[string]string),
 		roles:      make(map[string]*model.Role),

@@ -20,6 +20,8 @@ var permissionSeeds = []model.Permission{
 	{Code: model.PermAssetWrite, Name: "资产维护", Group: "asset", Description: "登记资产、发布/下线、删除资产"},
 	{Code: model.PermWhitelistRead, Name: "设备白名单查看", Group: "whitelist", Description: "查看设备白名单"},
 	{Code: model.PermWhitelistWrite, Name: "设备白名单维护", Group: "whitelist", Description: "增删设备白名单"},
+	{Code: model.PermContentRead, Name: "内容查看", Group: "content", Description: "查看课程与商城商品"},
+	{Code: model.PermContentWrite, Name: "内容维护", Group: "content", Description: "新增/修改/删除课程与商城商品及上下架"},
 }
 
 // builtinRoleSeed 内置角色种子。
@@ -45,6 +47,8 @@ var builtinRoleSeeds = []builtinRoleSeed{
 			model.PermDeviceRead, model.PermDeviceWrite, model.PermGameRead, model.PermGameWrite,
 			model.PermRecordRead, model.PermUserRead, model.PermAssetRead, model.PermAssetWrite,
 			model.PermWhitelistRead, model.PermWhitelistWrite, model.PermConfigRead,
+			// 内容中心（课程/商城商品），与 migrations/004_content.sql 的 operator 授权一致
+			model.PermContentRead, model.PermContentWrite,
 		},
 	},
 	{
@@ -54,6 +58,8 @@ var builtinRoleSeeds = []builtinRoleSeed{
 		Permissions: []string{
 			model.PermDeviceRead, model.PermGameRead, model.PermRecordRead, model.PermUserRead,
 			model.PermRoleRead, model.PermConfigRead, model.PermAssetRead, model.PermWhitelistRead,
+			// 内容中心只读，与 migrations/004_content.sql 的 viewer 授权一致
+			model.PermContentRead,
 		},
 	},
 }

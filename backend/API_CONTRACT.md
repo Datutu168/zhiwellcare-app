@@ -22,6 +22,16 @@
 | PUT | `/admin/games/:gameId` | 更新游戏 |
 | DELETE | `/admin/games/:gameId` | 删除游戏 |
 | PATCH | `/admin/games/:gameId/status` | body `{"status":"on"|"off"}` |
+| GET | `/admin/courses` | 课程列表（含 off）`data:{items:[…]}` |
+| POST | `/admin/courses` | 新建/更新课程（upsert）→ `data:{item}` |
+| PUT | `/admin/courses/:courseId` | 更新课程（以路径 ID 为准）→ `data:{deleted:true}` |
+| DELETE | `/admin/courses/:courseId` | 删除课程 → `data:{deleted:true}` |
+| PATCH | `/admin/courses/:courseId/status` | body `{"status":"on"\|"off"}` |
+| GET | `/admin/goods` | 商城商品列表（含 off）`data:{items:[…]}` |
+| POST | `/admin/goods` | 新建/更新商品（upsert）→ `data:{item}` |
+| PUT | `/admin/goods/:goodsId` | 更新商品（以路径 ID 为准）→ `data:{deleted:true}` |
+| DELETE | `/admin/goods/:goodsId` | 删除商品 → `data:{deleted:true}` |
+| PATCH | `/admin/goods/:goodsId/status` | body `{"status":"on"\|"off"}` |
 | GET | `/admin/users?keyword=&status=&page=&pageSize=` | 用户列表（status: -1 全部/0 禁用/1 正常）`data:{items,total}` |
 | PATCH | `/admin/users/:id/status` | body `{"status":0\|1}`（不可停用自己） |
 | GET | `/admin/training-records?page=&pageSize=&gameId=&modelId=` | 训练摘要 `data:{items,total}` |
@@ -85,6 +95,8 @@
 |---|---|---|
 | GET | `/catalog/devices` | 上架设备型号 |
 | GET | `/catalog/games` | 上架游戏；条目含 `resourceUrl`、`resourceSha256`、`resourceSize` |
+| GET | `/catalog/courses` | 上架课程（`status='on'`，按 `sort` 升序）`data:[…]` |
+| GET | `/catalog/goods` | 上架商城商品（`status='on'`，按 `sort` 升序）`data:[…]` |
 | GET | `/device/:modelId/games` | 该型号可用游戏（标签匹配结果） |
 | GET | `/app/web-bundle?platform=android\|windows\|web&currentVersion=0.1.0` | Web 包更新：有更新 `{upToDate:false,version,url,sha256,size,notes,publishedAt}`；无更新 `{upToDate:true,version}` |
 | GET | `/device/:modelId/firmware?currentVersion=1.0.0` | 固件更新，结构同上 |
@@ -92,13 +104,52 @@
 `resourceUrl` 回填规则：目录里 `resource_url` 为空、且存在该 `gameId`+`resourceVersion` 的 **published** 资产时，用 CDN 前缀（未配置 `APP_CDN_BASE` 则预签名地址）填充；**draft 资产不下发**。
 前端消费约定：`resourceUrl` 可能是「版本目录前缀」（以 `/` 结尾）或「该版本 `manifest.json` 的文件地址」两种形状，`src/core/resources/GameResourceResolver.ts` 均支持；清单缺失/不可用一律**静默回退内置资源**。
 
+## 内容中心（课程 / 商城商品）
+
+后台维护、APP 只读已上架项；两张表见 `migrations/004_content.sql`（`courses` / `mall_goods`）。
+`course_id` / `goods_id` 与设备/游戏同规则：`^[a-z0-9][a-z0-9-]{1,63}$`；`status ∈ on|off`（新建缺省 `off`）。
+公开接口与后台列表均按 **`sort` 升序**（同值按 ID 升序），公开接口只返回 `status='on'`；非法 ID / 非法 status / 缺必填字段一律 **400**，改状态或删除不存在的 ID → **404**。
+
+```json
+// Course
+{
+  "courseId": "balance-basic",
+  "title": "坐姿平衡基础",
+  "summary": "…",
+  "coverUrl": "https://cdn.example.com/covers/balance-basic.png",
+  "videoUrl": "https://cdn.example.com/videos/balance-basic.mp4",
+  "durationLabel": "8 分钟",
+  "level": "入门",
+  "tags": ["balance","wrist"],
+  "status": "on",
+  "sort": 10
+}
+```
+
+```json
+// MallGoods（保留价格字段：priceCents 供计算，priceLabel 供展示）
+{
+  "goodsId": "training-band",
+  "name": "训练腕带",
+  "summary": "…",
+  "priceCents": 19900,
+  "priceLabel": "¥199",
+  "coverUrl": "https://cdn.example.com/goods/training-band.png",
+  "detailUrl": "https://shop.example.com/goods/training-band",
+  "specs": ["S","M","L"],
+  "status": "on",
+  "sort": 20
+}
+```
+
 ## RBAC：权限点与角色
 
-权限点共 15 个（`code / 名称 / 分组`）：
+权限点共 17 个（`code / 名称 / 分组`）：
 
-`device:read` `device:write`（device）· `game:read` `game:write`（game）· `record:read`（record）· `user:read` `user:write`（user）· `role:read` `role:write`（role）· `config:read` `config:write`（config）· `asset:read` `asset:write`（asset）· `whitelist:read` `whitelist:write`（whitelist）
+`device:read` `device:write`（device）· `game:read` `game:write`（game）· `record:read`（record）· `user:read` `user:write`（user）· `role:read` `role:write`（role）· `config:read` `config:write`（config）· `asset:read` `asset:write`（asset）· `whitelist:read` `whitelist:write`（whitelist）· `content:read` `content:write`（content，004 迁移新增）
 
-内置角色（`builtin=true`，不可删除）：`admin`（15 项全部）· `operator`（11 项：设备/游戏/白名单/资产读写 + 记录与用户只读 + 配置只读）· `viewer`（8 项：只读）。
+内置角色（`builtin=true`，不可删除）：`admin`（17 项全部）· `operator`（13 项：设备/游戏/白名单/资产/内容读写 + 记录与用户只读 + 配置只读）· `viewer`（9 项：只读，含 `content:read`）。
+`admin` 的「全部权限」在 003 里是全量 `INSERT … SELECT`，而 003 先于 004 执行，故 004 里**显式补授**了 `content:read` / `content:write`（已实测：重复执行迁移不会重复插入）。
 历史数据兼容：迁移时把 `users.role='admin'` 的用户自动补入 `user_roles`。
 
 | 方法 | 路径 | 权限 | 说明 |
@@ -173,5 +224,9 @@
    - `POST /admin/device-mappings` → 映射条目 `{deviceKey,modelId,note}`；
    - `PATCH /admin/assets/:id/status` → 更新后的资产记录。
 4. **`GET /admin/assets` 额外支持可选 `status` 过滤**（`?kind=&refId=&status=`），且响应只含 `items`（无 `total`/分页字段）。
+5. **内容中心（课程/商品）两处按「内容中心契约」字面实现，与仓库惯例不同，前端按此对接**：
+   - `GET /admin/courses`、`GET /admin/goods` 返回 `data:{items:[…]}`（对象包 items，与 `/admin/assets`、`/admin/roles` 一致；**不是** `/admin/games` 那样的裸数组）；
+   - `PUT /admin/courses/:courseId`、`PUT /admin/goods/:goodsId` 与对应 DELETE 一样返回 `data:{deleted:true}`（契约原文如此；更新是否生效请以随后 GET 为准）；
+   - 公开接口 `GET /catalog/courses`、`GET /catalog/goods` 返回裸数组 `data:[…]`（与 `/catalog/games` 一致），空目录为 `[]`（不是 `null`）。
 
 另：`POST /admin/device-whitelist` 的 body 接受一个**可选扩展字段 `enabled`**（冻结契约只列 `deviceKey/modelId/note`），缺省视为启用。

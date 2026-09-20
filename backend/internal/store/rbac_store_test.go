@@ -14,32 +14,52 @@ func TestMemoryRBACStore(t *testing.T) {
 	ctx := context.Background()
 	data := NewMemory()
 
-	// 权限点种子：15 个（与迁移 003 一致）
+	// 权限点种子：17 个（003 的 15 个 + 004 的 content:read / content:write）
 	permissions, err := data.ListPermissions(ctx)
 	if err != nil {
 		t.Fatalf("ListPermissions 失败: %v", err)
 	}
-	if len(permissions) != 15 {
-		t.Fatalf("权限点应为 15 个，实际 %d", len(permissions))
+	if len(permissions) != 17 {
+		t.Fatalf("权限点应为 17 个，实际 %d", len(permissions))
 	}
+	// 精确断言编码集合（不多不少），并确认 004 的两个内容权限点确实在种子里
+	codes := make([]string, 0, len(permissions))
 	for _, item := range permissions {
 		if item.Code == "" || item.Name == "" || item.Group == "" {
 			t.Fatalf("权限点字段不完整: %+v", item)
 		}
+		codes = append(codes, item.Code)
+	}
+	if !sameCodeSet(codes, allPermissionCodes()) {
+		t.Fatalf("权限点种子与 allPermissionCodes 不一致:\n实际 %v\n预期 %v", codes, allPermissionCodes())
+	}
+	if !containsString(codes, model.PermContentRead) || !containsString(codes, model.PermContentWrite) {
+		t.Fatalf("种子缺少 content:read/content:write: %v", codes)
 	}
 
-	// 内置角色与权限集合
+	// 内置角色与权限集合（004 追加 content:* 后：admin 17 / operator 13 / viewer 9）
 	admin, err := data.GetRole(ctx, model.RoleAdmin)
-	if err != nil || !admin.Builtin || len(admin.Permissions) != 15 {
+	if err != nil || !admin.Builtin {
 		t.Fatalf("admin 角色异常: %+v %v", admin, err)
 	}
+	// admin 必须「精确拥有全部权限点」——004 新增的 content:* 自动纳入，不需要人工补
+	if !sameCodeSet(admin.Permissions, allPermissionCodes()) || len(admin.Permissions) != 17 {
+		t.Fatalf("admin 应精确拥有全部 17 个权限点（含 content:*）: %v", admin.Permissions)
+	}
 	operator, err := data.GetRole(ctx, model.RoleOperator)
-	if err != nil || len(operator.Permissions) != 11 {
+	if err != nil || len(operator.Permissions) != 13 {
 		t.Fatalf("operator 角色异常: %+v %v", operator, err)
 	}
 	viewer, err := data.GetRole(ctx, model.RoleViewer)
-	if err != nil || len(viewer.Permissions) != 8 {
+	if err != nil || len(viewer.Permissions) != 9 {
 		t.Fatalf("viewer 角色异常: %+v %v", viewer, err)
+	}
+	// 内容中心权限点归属：operator 读写、viewer 只读
+	if !containsString(operator.Permissions, model.PermContentWrite) || !containsString(operator.Permissions, model.PermContentRead) {
+		t.Fatalf("operator 应拥有 content:read/content:write: %v", operator.Permissions)
+	}
+	if !containsString(viewer.Permissions, model.PermContentRead) || containsString(viewer.Permissions, model.PermContentWrite) {
+		t.Fatalf("viewer 应只拥有 content:read: %v", viewer.Permissions)
 	}
 	if _, err := data.GetRole(ctx, "not-exist"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("不存在的角色应返回 ErrNotFound，实际 %v", err)
@@ -134,8 +154,8 @@ func TestMemoryRBACStore(t *testing.T) {
 		t.Fatalf("拥有 admin 角色后 users.role 应为 admin，实际 %q", stored.Role)
 	}
 	perms, _ = data.ListUserPermissions(ctx, user.ID)
-	if !containsString(perms, model.PermRoleWrite) || len(perms) != 15 {
-		t.Fatalf("admin 权限集合应为 15 个: %v", perms)
+	if !containsString(perms, model.PermRoleWrite) || len(perms) != 17 {
+		t.Fatalf("admin 权限集合应为 17 个: %v", perms)
 	}
 
 	// 回收全部角色 → users.role 回退、权限清空
@@ -377,4 +397,24 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// sameCodeSet 权限码集合完全相等（忽略顺序，但长度与元素都必须一致，重复项视为不等）。
+func sameCodeSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := make(map[string]struct{}, len(got))
+	for _, item := range got {
+		set[item] = struct{}{}
+	}
+	if len(set) != len(want) {
+		return false
+	}
+	for _, item := range want {
+		if _, ok := set[item]; !ok {
+			return false
+		}
+	}
+	return true
 }

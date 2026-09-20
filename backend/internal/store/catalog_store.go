@@ -24,6 +24,22 @@ type GameCatalogStore interface {
 	SetGameStatus(ctx context.Context, gameID, status string) error
 }
 
+// ContentStore 内容中心（课程 / 商城商品），后台运营维护、APP 只读已上架项。
+//
+// 与 GameCatalogStore 同构：includeOff=false 时只返回 status='on'，列表按 sort 升序
+// （sort 相同按 ID 升序，保证输出稳定）。删除/改状态时目标不存在返回 ErrNotFound。
+type ContentStore interface {
+	ListCourses(ctx context.Context, includeOff bool) ([]model.Course, error)
+	UpsertCourse(ctx context.Context, item model.Course) error
+	DeleteCourse(ctx context.Context, courseID string) error
+	SetCourseStatus(ctx context.Context, courseID, status string) error
+
+	ListGoods(ctx context.Context, includeOff bool) ([]model.MallGoods, error)
+	UpsertGoods(ctx context.Context, item model.MallGoods) error
+	DeleteGoods(ctx context.Context, goodsID string) error
+	SetGoodsStatus(ctx context.Context, goodsID, status string) error
+}
+
 // TrainingRecordFilter 训练记录查询过滤。
 type TrainingRecordFilter struct {
 	UserID   string
@@ -69,6 +85,7 @@ type Combined interface {
 	RefreshTokenStore
 	DeviceModelStore
 	GameCatalogStore
+	ContentStore
 	TrainingRecordStore
 	OAuthStore
 	RBACStore

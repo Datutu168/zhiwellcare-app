@@ -22,6 +22,9 @@ const (
 	PermAssetWrite     = "asset:write"
 	PermWhitelistRead  = "whitelist:read"
 	PermWhitelistWrite = "whitelist:write"
+	// 内容中心（课程 / 商城商品），种子见 migrations/004_content.sql。
+	PermContentRead  = "content:read"
+	PermContentWrite = "content:write"
 )
 
 // 内置角色编码。

@@ -64,6 +64,7 @@ func NewEngine(deps Deps) *gin.Engine {
 	authAPI := &authHandler{store: deps.Store, manager: deps.Manager, refreshTTL: deps.Config.RefreshTokenTTL, exchange: deps.WeChat, sessions: deps.Sessions}
 	userAPI := &userHandler{store: deps.Store}
 	catalogAPI := &catalogHandler{store: deps.Store, assets: deps.Assets, cfg: deps.Config}
+	contentAPI := &contentHandler{store: deps.Store}
 	adminUserAPI := &adminUserHandler{store: deps.Store}
 	recordAPI := &recordHandler{store: deps.Store}
 	fileAPI := &fileHandler{store: deps.Store, assets: deps.Assets, cfg: deps.Config}
@@ -100,6 +101,9 @@ func NewEngine(deps Deps) *gin.Engine {
 		{
 			catalog.GET("/devices", catalogAPI.publicDeviceModels)
 			catalog.GET("/games", catalogAPI.publicGames)
+			// 内容中心：课程 / 商城商品（只下发已上架项，按 sort 升序）
+			catalog.GET("/courses", contentAPI.publicCourses)
+			catalog.GET("/goods", contentAPI.publicGoods)
 		}
 		v1.GET("/device/:modelId/games", catalogAPI.deviceGames)
 		// 公开下发：Web 资源包 / 设备固件（有更新给地址，无更新只给版本）
@@ -145,6 +149,17 @@ func NewEngine(deps Deps) *gin.Engine {
 			admin.PUT("/games/:gameId", allow(model.PermGameWrite), catalogAPI.adminUpdateGame)
 			admin.DELETE("/games/:gameId", allow(model.PermGameWrite), catalogAPI.adminDeleteGame)
 			admin.PATCH("/games/:gameId/status", allow(model.PermGameWrite), catalogAPI.adminSetGameStatus)
+			// 内容中心（课程 / 商城商品）
+			admin.GET("/courses", allow(model.PermContentRead), contentAPI.adminListCourses)
+			admin.POST("/courses", allow(model.PermContentWrite), contentAPI.adminCreateCourse)
+			admin.PUT("/courses/:courseId", allow(model.PermContentWrite), contentAPI.adminUpdateCourse)
+			admin.DELETE("/courses/:courseId", allow(model.PermContentWrite), contentAPI.adminDeleteCourse)
+			admin.PATCH("/courses/:courseId/status", allow(model.PermContentWrite), contentAPI.adminSetCourseStatus)
+			admin.GET("/goods", allow(model.PermContentRead), contentAPI.adminListGoods)
+			admin.POST("/goods", allow(model.PermContentWrite), contentAPI.adminCreateGoods)
+			admin.PUT("/goods/:goodsId", allow(model.PermContentWrite), contentAPI.adminUpdateGoods)
+			admin.DELETE("/goods/:goodsId", allow(model.PermContentWrite), contentAPI.adminDeleteGoods)
+			admin.PATCH("/goods/:goodsId/status", allow(model.PermContentWrite), contentAPI.adminSetGoodsStatus)
 			// 用户与训练记录
 			admin.GET("/users", allow(model.PermUserRead), adminUserAPI.listUsers)
 			admin.PATCH("/users/:id/status", allow(model.PermUserWrite), adminUserAPI.setUserStatus)

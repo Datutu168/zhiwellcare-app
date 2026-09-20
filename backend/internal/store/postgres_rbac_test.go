@@ -436,21 +436,21 @@ func TestPostgresRBACAndConfig(t *testing.T) {
 	suffix := uniqueSuffix()
 
 	permissions, err := pg.ListPermissions(ctx)
-	if err != nil || len(permissions) != 15 {
-		t.Fatalf("权限点应为 15 个: %d %v", len(permissions), err)
+	if err != nil || len(permissions) != 17 {
+		t.Fatalf("权限点应为 17 个（003 的 15 个 + 004 的 content:*）: %d %v", len(permissions), err)
 	}
 	roles, err := pg.ListRoles(ctx)
 	if err != nil {
 		t.Fatalf("ListRoles 失败: %v", err)
 	}
 	admin := findRoleByCode(roles, model.RoleAdmin)
-	if admin == nil || !admin.Builtin || len(admin.Permissions) != 15 {
+	if admin == nil || !admin.Builtin || len(admin.Permissions) != 17 {
 		t.Fatalf("admin 角色异常: %+v", admin)
 	}
-	if operator := findRoleByCode(roles, model.RoleOperator); operator == nil || len(operator.Permissions) != 11 {
+	if operator := findRoleByCode(roles, model.RoleOperator); operator == nil || len(operator.Permissions) != 13 {
 		t.Fatalf("operator 角色异常: %+v", operator)
 	}
-	if viewer := findRoleByCode(roles, model.RoleViewer); viewer == nil || len(viewer.Permissions) != 8 {
+	if viewer := findRoleByCode(roles, model.RoleViewer); viewer == nil || len(viewer.Permissions) != 9 {
 		t.Fatalf("viewer 角色异常: %+v", viewer)
 	}
 

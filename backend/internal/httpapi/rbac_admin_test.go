@@ -198,15 +198,17 @@ func TestRBACRolesCRUDAndBuiltinProtection(t *testing.T) {
 	adminToken, adminUserID := env.newUserWithRoles(t, "13800009101", model.RoleAdmin)
 
 	// 权限点清单：字段名与契约一致（code/name/group/description）
+	// 数量为 17：003 的 15 个 + 004 内容中心的 content:read / content:write
 	_, res := doJSON(t, env.engine, http.MethodGet, "/api/v1/admin/permissions", adminToken, nil)
 	permissions := decode[struct {
 		Items []model.Permission `json:"items"`
 	}](t, res.Data)
-	if len(permissions.Items) != 15 {
-		t.Fatalf("权限点应为 15 个，实际 %d", len(permissions.Items))
+	if len(permissions.Items) != 17 {
+		t.Fatalf("权限点应为 17 个，实际 %d", len(permissions.Items))
 	}
-	if !contains(permissionCodes(permissions.Items), model.PermWhitelistWrite) {
-		t.Fatalf("缺少 whitelist:write 权限点: %+v", permissions.Items)
+	// 精确断言：编码集合必须完全等于「003 的 15 个 + 004 的 content:*」，不多不少
+	if got, want := permissionCodes(permissions.Items), expectedPermissionCodes(); !sameStringSet(got, want) {
+		t.Fatalf("权限点编码集合与预期不一致:\n实际 %v\n预期 %v", got, want)
 	}
 	first := permissions.Items[0]
 	if first.Code == "" || first.Name == "" || first.Group == "" {
@@ -218,20 +220,32 @@ func TestRBACRolesCRUDAndBuiltinProtection(t *testing.T) {
 	roles := decode[struct {
 		Items []model.Role `json:"items"`
 	}](t, res.Data)
+	// admin：精确拥有全部 17 个权限点（与权限点字典逐个对齐，不是「>= 15」这类模糊判断）
 	admin := findRole(roles.Items, model.RoleAdmin)
-	if admin == nil || !admin.Builtin || len(admin.Permissions) != 15 {
+	if admin == nil || !admin.Builtin {
 		t.Fatalf("admin 角色异常: %+v", admin)
+	}
+	if !sameStringSet(admin.Permissions, expectedPermissionCodes()) {
+		t.Fatalf("admin 应精确拥有全部 17 个权限点:\n实际 %v", admin.Permissions)
 	}
 	if admin.UserCount != 1 {
 		t.Fatalf("admin 角色用户数应为 1，实际 %d", admin.UserCount)
 	}
+	// operator：13 项，且必须含 content:read + content:write（004 新增）
 	operator := findRole(roles.Items, model.RoleOperator)
-	if operator == nil || len(operator.Permissions) != 11 {
+	if operator == nil || len(operator.Permissions) != 13 {
 		t.Fatalf("operator 角色异常: %+v", operator)
 	}
+	if !contains(operator.Permissions, model.PermContentRead) || !contains(operator.Permissions, model.PermContentWrite) {
+		t.Fatalf("operator 应含 content:read + content:write: %v", operator.Permissions)
+	}
+	// viewer：9 项，含 content:read 但不含 content:write
 	viewer := findRole(roles.Items, model.RoleViewer)
-	if viewer == nil || len(viewer.Permissions) != 8 {
+	if viewer == nil || len(viewer.Permissions) != 9 {
 		t.Fatalf("viewer 角色异常: %+v", viewer)
+	}
+	if !contains(viewer.Permissions, model.PermContentRead) || contains(viewer.Permissions, model.PermContentWrite) {
+		t.Fatalf("viewer 应只含 content:read: %v", viewer.Permissions)
 	}
 
 	// 新建角色
@@ -320,6 +334,43 @@ func permissionCodes(items []model.Permission) []string {
 		codes = append(codes, item.Code)
 	}
 	return codes
+}
+
+// expectedPermissionCodes 权限点全集的期望值：设备/游戏/记录/用户/角色/配置/资产/白名单
+// 各权限点（003 迁移的 15 个）+ 内容中心 content:read / content:write（004 迁移新增），共 17 个。
+// 用于精确断言（集合完全相等），避免「>= 15」这类会漏掉新增权限点的模糊判断。
+func expectedPermissionCodes() []string {
+	return []string{
+		model.PermDeviceRead, model.PermDeviceWrite,
+		model.PermGameRead, model.PermGameWrite,
+		model.PermRecordRead,
+		model.PermUserRead, model.PermUserWrite,
+		model.PermRoleRead, model.PermRoleWrite,
+		model.PermConfigRead, model.PermConfigWrite,
+		model.PermAssetRead, model.PermAssetWrite,
+		model.PermWhitelistRead, model.PermWhitelistWrite,
+		model.PermContentRead, model.PermContentWrite,
+	}
+}
+
+// sameStringSet 集合完全相等（忽略顺序，但长度与元素都必须一致）。
+func sameStringSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := make(map[string]struct{}, len(got))
+	for _, item := range got {
+		set[item] = struct{}{}
+	}
+	if len(set) != len(want) {
+		return false // 有重复项
+	}
+	for _, item := range want {
+		if _, ok := set[item]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func findRole(items []model.Role, code string) *model.Role {

@@ -16,6 +16,16 @@ export interface MePermissions {
   permissions: string[]
 }
 
+/**
+ * 自助修改密码载荷（个人账号接口，非 /admin/* 命名空间）。
+ * 后端契约：`PUT /me/password`，成功返回 `{ updated: true }`；
+ * 失败为 400/401 + 中文 message（原密码不正确 / 长度不合规 / 新旧相同）。
+ */
+export interface ChangePasswordPayload {
+  oldPassword: string
+  newPassword: string
+}
+
 export interface PermissionItem {
   code: string
   name: string
@@ -186,6 +196,9 @@ function seg(value: string): string {
 }
 
 export const adminApi = {
+  /* 个人账号（自助操作：任何已登录用户都可改自己的密码，不看 RBAC 权限码） */
+  changePassword: (body: ChangePasswordPayload) => api.put<{ updated: boolean }>('/me/password', body),
+
   /* 权限 */
   mePermissions: () => api.get<MePermissions>('/admin/me/permissions'),
   listPermissions: () => api.get<{ items: PermissionItem[] }>('/admin/permissions'),

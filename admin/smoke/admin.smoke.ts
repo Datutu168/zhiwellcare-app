@@ -13,15 +13,25 @@ import { createApp, h, type App } from 'vue'
 import { RouterView, createMemoryHistory, createRouter } from 'vue-router'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
+import type { FormItemRule } from 'element-plus'
 import { createHash } from 'node:crypto'
 import { it } from 'vitest'
 
 import { adminToken } from '../src/api/token'
 import { useAdminPermissionsStore } from '../src/stores/adminPermissions'
 import { pinia } from '../src/stores/pinia'
-import { apiErrorText, contentErrorText } from '../src/api/admin'
+import { adminApi, apiErrorText, contentErrorText } from '../src/api/admin'
 import { ADMIN_MENUS, PERM, menuPermission } from '../src/constants/permissions'
 import { centsToYuanText, formatCents, isHttpsUrl, parseYuanToCents, priceText } from '../src/constants/content'
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  emptyPasswordChangeForm,
+  newPasswordError,
+  passwordChangeError,
+  passwordRule,
+  type PasswordChangeForm,
+} from '../src/constants/account'
 import { ApiError } from '../src/api/http'
 import RolesView from '../src/views/system/RolesView.vue'
 import ConfigView from '../src/views/system/ConfigView.vue'
@@ -42,6 +52,8 @@ interface Ctx {
   query: URLSearchParams
   body: any
   raw: any
+  /** Authorization 头（用于校验个人账号接口同样带 bearer token） */
+  auth: string
 }
 interface MockResult {
   status?: number
@@ -60,7 +72,7 @@ const fail = (status: number, message: string): MockResult => ({ status, code: s
 
 function installFetch(): void {
   const g = globalThis as unknown as Record<string, unknown>
-  g.fetch = async (input: unknown, init?: { method?: string; body?: unknown }) => {
+  g.fetch = async (input: unknown, init?: { method?: string; body?: unknown; headers?: unknown }) => {
     const url = typeof input === 'string' ? input : String(input)
     const method = (init?.method ?? 'GET').toUpperCase()
     let body: any = init?.body ?? null
@@ -71,6 +83,12 @@ function installFetch(): void {
         /* 保留原始字符串 */
       }
     }
+    let auth = ''
+    try {
+      auth = init?.headers ? (new Headers(init.headers as HeadersInit).get('Authorization') ?? '') : ''
+    } catch {
+      /* 保留空串 */
+    }
     const apiMatch = /\/api\/v1(\/[^?]*)/.exec(url)
     const ctx: Ctx = {
       method,
@@ -79,6 +97,7 @@ function installFetch(): void {
       query: new URLSearchParams(url.includes('?') ? url.slice(url.indexOf('?') + 1) : ''),
       body,
       raw: init?.body ?? null,
+      auth,
     }
     calls.push(ctx)
     const result = await handler(ctx)
@@ -205,6 +224,33 @@ function clickRadio(label: string, root: ParentNode): boolean {
 function cellsOf(row: Element | undefined): string[] {
   if (!row) return []
   return Array.from(row.querySelectorAll('td')).map((cell) => text(cell).trim())
+}
+
+/** 最近一条 ElMessage 的文本（校验提示时避免命中上一条残留 toast）。 */
+function lastMessageText(): string {
+  const items = Array.from(document.querySelectorAll('.el-message'))
+  return text(items[items.length - 1] ?? document.body)
+}
+
+/** 弹窗遮罩是否可见（v-show 关闭后元素仍在 DOM 里，display 为 none）。 */
+function overlayVisible(): boolean {
+  const overlay = document.querySelector('.el-overlay') as HTMLElement | null
+  if (!overlay) return false
+  return (globalThis as any).getComputedStyle(overlay).display !== 'none'
+}
+
+/** 直接调用 el-form 规则拿到校验文案（用于验证规则工厂与同步校验共用同一份提示）。 */
+function ruleMessage(rule: FormItemRule): string {
+  let message = ''
+  const validator = rule.validator as unknown as (
+    r: unknown,
+    v: unknown,
+    callback: (error?: string | Error) => void,
+  ) => void
+  validator(undefined, undefined, (error) => {
+    message = typeof error === 'string' ? error : (error?.message ?? '')
+  })
+  return message
 }
 
 /* ------------------------------------------------------------------ *
@@ -1281,6 +1327,321 @@ async function checkContentRobustness(): Promise<void> {
   resetDom()
 }
 
+/* ------------------------------------------------------------------ *
+ * 修改密码（个人账号自助功能）
+ * ------------------------------------------------------------------ */
+
+/** 挂载真实布局壳（顶栏用户菜单 → 修改密码弹窗）。 */
+async function mountShell(): Promise<HTMLElement> {
+  adminToken.set('smoke-token')
+  const { router } = await import('../src/router')
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const app = createApp({ render: () => h(RouterView) })
+  app.use(createPinia())
+  app.use(router)
+  app.use(ElementPlus)
+  await router.push('/dashboard')
+  app.mount(container)
+  mounted.push(app)
+  await flush(14)
+  return container
+}
+
+/** 打开顶栏用户下拉并点击「修改密码」。 */
+async function openPasswordEntry(container: HTMLElement): Promise<boolean> {
+  ;(container.querySelector('.user') as HTMLElement | null)?.click()
+  await flush()
+  const entry = Array.from(document.querySelectorAll('.el-dropdown-menu__item')).find((item) =>
+    (item.textContent ?? '').includes('修改密码'),
+  ) as HTMLElement | undefined
+  if (!entry) return false
+  entry.click()
+  await flush()
+  return true
+}
+
+async function checkChangePasswordApi(): Promise<void> {
+  console.log('\n[15] 修改密码接口：PUT /api/v1/me/password 路径、载荷与错误文案')
+  resetDom()
+  adminToken.set('smoke-token')
+  let auth = ''
+  handler = (ctx) => {
+    if (ctx.path === '/me/password' && ctx.method === 'PUT') {
+      auth = ctx.auth
+      return ok({ updated: true })
+    }
+    return fail(404, 'not mocked')
+  }
+
+  const data = await adminApi.changePassword({ oldPassword: 'old-secret', newPassword: 'new-secret' })
+  const call = calls[0]
+  check('方法为 PUT', call?.method === 'PUT', String(call?.method))
+  check('路径恰为 /api/v1/me/password', call?.url === '/api/v1/me/password', String(call?.url))
+  check(
+    '载荷字段恰为 oldPassword / newPassword',
+    Object.keys(call?.body ?? {}).sort().join(',') === 'newPassword,oldPassword',
+    JSON.stringify(call?.body),
+  )
+  check(
+    '载荷取值原样透传',
+    call?.body?.oldPassword === 'old-secret' && call?.body?.newPassword === 'new-secret',
+    JSON.stringify(call?.body),
+  )
+  check('沿用既有 bearer access token', auth === 'Bearer smoke-token', JSON.stringify(auth))
+  check('信封 {code:0,data:{updated:true}} 解包为 true', data?.updated === true, JSON.stringify(data))
+
+  // 口令不做 trim（空格是合法字符，前端不得「顺手」裁剪）
+  calls.length = 0
+  await adminApi.changePassword({ oldPassword: '  spaced old  ', newPassword: '  spaced new  ' })
+  check(
+    '口令不做 trim',
+    calls[0]?.body?.oldPassword === '  spaced old  ' && calls[0]?.body?.newPassword === '  spaced new  ',
+    JSON.stringify(calls[0]?.body),
+  )
+
+  // 后端口径的中文错误必须原样透出（用户看到的提示以后端 message 为准）
+  const errorOf = async (status: number, message: string): Promise<{ status: number; text: string }> => {
+    handler = () => fail(status, message)
+    try {
+      await adminApi.changePassword({ oldPassword: 'old-secret', newPassword: 'new-secret' })
+      return { status: 0, text: '' }
+    } catch (e) {
+      return { status: e instanceof ApiError ? e.status : -1, text: apiErrorText(e, '密码修改失败') }
+    }
+  }
+  // 原密码错误刻意是 400 而不是 401：http.ts 对任何 401 都会清掉本地令牌，
+  // 用 401 会让用户输错一次原密码就被踢回登录页（见 backend/API_CONTRACT.md）。
+  const wrongOld = await errorOf(400, '原密码不正确')
+  check('400 原密码不正确：状态与文案透出', wrongOld.status === 400 && wrongOld.text === '原密码不正确', JSON.stringify(wrongOld))
+  const same = await errorOf(400, '新密码不能与原密码相同')
+  check('400 新旧相同：文案透出', same.status === 400 && same.text === '新密码不能与原密码相同', JSON.stringify(same))
+  const tooShort = await errorOf(400, '新密码长度需为 6-64 位')
+  check('400 长度不合规：文案透出', tooShort.text.includes('6-64'), JSON.stringify(tooShort))
+  const malformed = await errorOf(400, '请求参数格式不正确')
+  check('400 参数格式不正确：文案透出', malformed.text === '请求参数格式不正确', JSON.stringify(malformed))
+
+  handler = () => {
+    throw new Error('network down')
+  }
+  let offline = ''
+  try {
+    await adminApi.changePassword({ oldPassword: 'a', newPassword: 'b' })
+  } catch (e) {
+    offline = apiErrorText(e, '密码修改失败')
+  }
+  check('后端未就绪时给出中文兜底提示', offline.includes('无法连接后端服务'), offline)
+  // 改密接口的错误一律是 400（含「原密码不正确」），因此 http.ts 不会清本地 token：
+  // 输错原密码后当前会话必须继续可用，否则用户会被静默踢回登录页。
+  check('改密失败不影响当前登录态（400 不触发清令牌）', adminToken.get() === 'smoke-token', String(adminToken.get()))
+  adminToken.set('smoke-token')
+}
+
+function checkPasswordValidation(): void {
+  console.log('\n[16] 改密同步校验：必填 / 长度 6-64 / 两次一致 / 新旧不同')
+  const valid: PasswordChangeForm = { oldPassword: 'old-secret', newPassword: 'new-secret', confirmPassword: 'new-secret' }
+  check('合法表单通过校验', passwordChangeError(valid) === '', passwordChangeError(valid))
+  check('纯空白原密码视为未填', passwordChangeError({ ...valid, oldPassword: '   ' }).includes('请填写原密码'))
+  check('新密码为空被拒', passwordChangeError({ ...valid, newPassword: '' }).includes('请填写新密码'))
+  check('确认新密码为空被拒', passwordChangeError({ ...valid, confirmPassword: '' }).includes('请填写确认新密码'))
+  check('新密码 5 位被拒（后端 6-64）', passwordChangeError({ ...valid, newPassword: 'abcde', confirmPassword: 'abcde' }).includes(`长度需为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 位`))
+  check('新密码 65 位被拒', passwordChangeError({ ...valid, newPassword: 'a'.repeat(65), confirmPassword: 'a'.repeat(65) }).includes('长度需为 6-64 位'))
+  check('新密码 6 位边界通过', passwordChangeError({ ...valid, newPassword: 'abcdef', confirmPassword: 'abcdef' }) === '')
+  check('新密码 64 位边界通过', passwordChangeError({ ...valid, newPassword: 'a'.repeat(64), confirmPassword: 'a'.repeat(64) }) === '')
+  check('两次输入不一致被拒', passwordChangeError({ ...valid, confirmPassword: 'new-secret-x' }).includes('不一致'))
+  check(
+    '新密码与原密码相同被拒（省掉一次往返）',
+    passwordChangeError({ oldPassword: 'same-secret', newPassword: 'same-secret', confirmPassword: 'same-secret' }).includes('新密码不能与原密码相同'),
+  )
+  check('newPasswordError 只校验长度', newPasswordError('new-secret') === '' && newPasswordError('12345').includes('6-64'))
+  check('长度常量与后端契约一致', PASSWORD_MIN_LENGTH === 6 && PASSWORD_MAX_LENGTH === 64, `${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}`)
+  const empty = emptyPasswordChangeForm()
+  check('emptyPasswordChangeForm 三个字段均为空', empty.oldPassword === '' && empty.newPassword === '' && empty.confirmPassword === '')
+
+  // el-form 规则工厂与同步校验共用同一份中文文案（避免两处写歪）
+  const form: PasswordChangeForm = { oldPassword: '', newPassword: '123', confirmPassword: '456' }
+  check('规则：新密码过短给出长度提示', ruleMessage(passwordRule('newPassword', form)).includes('长度需为 6-64 位'), ruleMessage(passwordRule('newPassword', form)))
+  check('规则：原密码为空给出必填提示', ruleMessage(passwordRule('oldPassword', form)).includes('请填写原密码'))
+  check('规则：两次不一致给出不一致提示', ruleMessage(passwordRule('confirmPassword', form)).includes('不一致'))
+  form.newPassword = 'new-secret'
+  form.confirmPassword = 'new-secret'
+  check('规则：合法值不再报错', ruleMessage(passwordRule('confirmPassword', form)) === '', ruleMessage(passwordRule('confirmPassword', form)))
+}
+
+async function checkChangePasswordDialog(): Promise<void> {
+  console.log('\n[17] 修改密码弹窗：入口 / 校验拦截 / 提交 / 清空敏感字段')
+  resetDom()
+  let putBody: any = null
+  let failNext = false
+  handler = (ctx) => {
+    // 只给 device:read：账号相关权限码一个都没有，改密入口仍必须可用（不做 RBAC 门禁）
+    if (ctx.path === '/admin/me/permissions') return ok({ roles: ['operator'], permissions: ['device:read'] })
+    if (ctx.path === '/me/password' && ctx.method === 'PUT') {
+      putBody = ctx.body
+      return failNext ? fail(400, '原密码不正确') : ok({ updated: true })
+    }
+    return ok({ items: [] })
+  }
+  const container = await mountShell()
+  check('顶栏用户区域渲染', container.querySelector('.user') !== null)
+  check('改密入口不依赖任何权限码（权限仅 device:read）', text(container.querySelector('.header') ?? container).includes('管理员'))
+
+  check('打开用户下拉并点击「修改密码」', await openPasswordEntry(container))
+  const items = Array.from(document.querySelectorAll('.el-dropdown-menu__item')).map((i) => (i.textContent ?? '').trim())
+  check('下拉同时保留「退出登录」', items.some((t) => t.includes('退出登录')), JSON.stringify(items))
+  check('未点击退出登录（未跳转登录页）', !text(document.body).includes('登录运营后台'))
+  const dialog = document.querySelector('.el-dialog') as HTMLElement | null
+  check('修改密码对话框打开', dialog !== null)
+  if (!dialog) return
+  check('对话框标题为「修改密码」', text(dialog.querySelector('.el-dialog__title') ?? dialog).includes('修改密码'))
+
+  const oldInput = inputByLabel('原密码', dialog) as HTMLInputElement | null
+  const newInput = inputByLabel('新密码', dialog) as HTMLInputElement | null
+  const confirmInput = inputByLabel('确认新密码', dialog) as HTMLInputElement | null
+  check('原密码 / 新密码 / 确认新密码三个字段齐备', oldInput !== null && newInput !== null && confirmInput !== null)
+  check(
+    '三个字段均为 type=password',
+    [oldInput, newInput, confirmInput].every((input) => input?.type === 'password'),
+    [oldInput?.type, newInput?.type, confirmInput?.type].join(','),
+  )
+  check('底部为「取消 / 确定」按钮', countsByText('取消', dialog) === 1 && countsByText('确定', dialog) === 1)
+  if (!oldInput || !newInput || !confirmInput) return
+
+  const fill = async (oldPwd: string, newPwd: string, confirmPwd: string): Promise<void> => {
+    setInput(oldInput, oldPwd)
+    setInput(newInput, newPwd)
+    setInput(confirmInput, confirmPwd)
+    await flush()
+  }
+
+  // show-password：Element Plus 只在字段有值时渲染切换图标，故先填值再断言
+  await fill('old-secret', 'new-secret', 'new-secret')
+  check(
+    '三个字段均带 show-password 切换图标',
+    dialog.querySelectorAll('.el-input__password').length === 3,
+    String(dialog.querySelectorAll('.el-input__password').length),
+  )
+  ;(dialog.querySelectorAll('.el-input__password')[0] as HTMLElement | undefined)?.click()
+  await flush()
+  check('点击切换图标后原密码转为明文（type=text）', oldInput.type === 'text', oldInput.type)
+  ;(dialog.querySelectorAll('.el-input__password')[0] as HTMLElement | undefined)?.click()
+  await flush()
+  check('再次点击恢复掩码（type=password）', oldInput.type === 'password', oldInput.type)
+
+  // 1) 三个字段都为空 → 必填拦截，不发请求
+  await fill('', '', '')
+  calls.length = 0
+  check('点击「确定」（全空）', clickText('确定', dialog))
+  await flush()
+  check('提示「请填写原密码」', lastMessageText().includes('请填写原密码'), lastMessageText())
+  check('校验失败不发送请求', findCall('PUT', '/me/password') === undefined)
+
+  // 2) 新密码太短
+  await fill('old-secret', '123', '123')
+  calls.length = 0
+  check('点击「确定」（新密码 3 位）', clickText('确定', dialog))
+  await flush()
+  check('提示新密码长度 6-64', lastMessageText().includes('长度需为 6-64 位'), lastMessageText())
+  check('长度非法不发送请求', findCall('PUT', '/me/password') === undefined)
+
+  // 3) 两次输入不一致
+  await fill('old-secret', 'new-secret', 'new-secret-x')
+  calls.length = 0
+  check('点击「确定」（两次不一致）', clickText('确定', dialog))
+  await flush()
+  check('提示两次输入不一致', lastMessageText().includes('不一致'), lastMessageText())
+  check('不一致不发送请求', findCall('PUT', '/me/password') === undefined)
+
+  // 4) 新密码与原密码相同
+  await fill('same-secret', 'same-secret', 'same-secret')
+  calls.length = 0
+  check('点击「确定」（新旧相同）', clickText('确定', dialog))
+  await flush()
+  check('提示新密码不能与原密码相同', lastMessageText().includes('新密码不能与原密码相同'), lastMessageText())
+  check('新旧相同不发送请求', findCall('PUT', '/me/password') === undefined)
+
+  // 5) 合法表单 + 后端 400（原密码不正确）：展示后端中文 message、保留弹窗、清空口令
+  failNext = true
+  await fill('old-secret', 'new-secret', 'new-secret')
+  calls.length = 0
+  check('点击「确定」（字段合法）', clickText('确定', dialog))
+  await flush(12)
+  const put = findCall('PUT', '/me/password')
+  check('发出 PUT /api/v1/me/password', put?.url === '/api/v1/me/password', String(put?.url))
+  check(
+    '载荷仅含 oldPassword / newPassword',
+    JSON.stringify(putBody) === JSON.stringify({ oldPassword: 'old-secret', newPassword: 'new-secret' }),
+    JSON.stringify(putBody),
+  )
+  check('失败时展示后端中文 message', lastMessageText().includes('原密码不正确'), lastMessageText())
+  const failedOverlayVisible = overlayVisible()
+  check('失败时不关闭对话框', failedOverlayVisible)
+  check(
+    '失败后清空三个口令字段',
+    oldInput.value === '' && newInput.value === '' && confirmInput.value === '',
+    `${oldInput.value}|${newInput.value}|${confirmInput.value}`,
+  )
+  // 原密码不正确是 400 而非 401，本地令牌不会被清掉，用户无需重新登录
+  check('改密失败后登录态未被清除', adminToken.get() === 'smoke-token', String(adminToken.get()))
+  adminToken.set('smoke-token')
+
+  // 6) 成功：关闭弹窗 + 成功提示（说明其他设备在令牌过期前仍登录）
+  failNext = false
+  await fill('old-secret', 'new-secret', 'new-secret')
+  calls.length = 0
+  check('点击「确定」（后端成功）', clickText('确定', dialog))
+  await flush(12)
+  check('成功时提示已修改', lastMessageText().includes('密码已修改'), lastMessageText())
+  check('成功提示说明其他设备在令牌过期前仍有效', lastMessageText().includes('令牌过期'), lastMessageText())
+  check('成功后关闭对话框', !overlayVisible())
+
+  // 7) 重新打开：口令已清空（不残留明文）
+  adminToken.set('smoke-token')
+  check('重新打开修改密码入口', await openPasswordEntry(container))
+  const dialog2 = document.querySelector('.el-dialog') as HTMLElement | null
+  check('修改密码对话框再次打开', dialog2 !== null && overlayVisible())
+  if (!dialog2) return
+  check(
+    '重新打开时三个口令均为空',
+    ['原密码', '新密码', '确认新密码'].every((label) => (inputByLabel(label, dialog2) as HTMLInputElement | null)?.value === ''),
+  )
+
+  // 8) 提交中：按钮 loading / 取消禁用 / 双击不重复提交
+  let release: () => void = () => {}
+  let puts = 0
+  handler = (ctx) => {
+    if (ctx.path === '/admin/me/permissions') return ok({ roles: ['operator'], permissions: ['device:read'] })
+    if (ctx.path === '/me/password' && ctx.method === 'PUT') {
+      puts += 1
+      return new Promise<MockResult>((resolve) => {
+        release = () => resolve(ok({ updated: true }))
+      })
+    }
+    return ok({ items: [] })
+  }
+  const oldInput2 = inputByLabel('原密码', dialog2) as HTMLInputElement | null
+  const newInput2 = inputByLabel('新密码', dialog2) as HTMLInputElement | null
+  const confirmInput2 = inputByLabel('确认新密码', dialog2) as HTMLInputElement | null
+  if (!oldInput2 || !newInput2 || !confirmInput2) return
+  setInput(oldInput2, 'old-secret')
+  setInput(newInput2, 'new-secret')
+  setInput(confirmInput2, 'new-secret')
+  await flush()
+  check('点击「确定」（慢速接口）', clickText('确定', dialog2))
+  await flush(6)
+  const primary = dialog2.querySelector('.el-dialog__footer .el-button--primary') as HTMLElement | null
+  const cancelBtn = dialog2.querySelector('.el-dialog__footer .el-button:not(.el-button--primary)') as HTMLButtonElement | null
+  check('请求中确定按钮为 loading', primary?.className.includes('is-loading') === true, String(primary?.className))
+  check('请求中取消按钮禁用', cancelBtn?.disabled === true)
+  clickText('确定', dialog2)
+  await flush(4)
+  check('请求中重复点击不会重复提交', puts === 1, String(puts))
+  release()
+  await flush(20)
+  check('请求完成后关闭对话框', !overlayVisible())
+  resetDom()
+}
+
 /* ------------------------------------------------------------------ */
 
 it('管理后台新增页面冒烟：渲染 / 交互 / 请求载荷', async () => {
@@ -1300,6 +1661,9 @@ it('管理后台新增页面冒烟：渲染 / 交互 / 请求载荷', async () =
   await checkCoursesView()
   await checkGoodsView()
   await checkContentRobustness()
+  await checkChangePasswordApi()
+  checkPasswordValidation()
+  await checkChangePasswordDialog()
 
   console.log(`\n通过 ${passed} 项，失败 ${failures.length} 项`)
   if (failures.length) {

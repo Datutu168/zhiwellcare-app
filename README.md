@@ -78,6 +78,30 @@ macOS 打包用 `./04-pack-macos.sh`（**必须在 Mac 上构建**，Tauri 无�
 详见 `打包与发布说明.md` 第五节。
 环境变量参考 `.env.example`（目录/上报/签名密钥均不落库）。
 
+### 各端实现现状（前端已就绪，原生工程按需生成）
+
+| 端 | 工程 | BLE | 横屏/常亮 | 应用内更新 |
+| --- | --- | --- | --- | --- |
+| Web | 无需工程 | 不可用（浏览器限制，返回可读提示） | 无 | 无 |
+| Windows | `src-tauri/`（已生成） | Tauri + Rust btleplug | 无 | NSIS 自更新 |
+| macOS | `src-tauri/`（同一套代码） | Tauri + Rust btleplug | 无 | 未签名时不可用（需 Apple 账号） |
+| Android | `android/`（已生成） | Capacitor bluetooth-le | 有 | APK 自更新 |
+| iOS | **尚未生成 `ios/`** | 前端已接好 Capacitor bluetooth-le | 已接好 | 无（App Store 不允许自更新） |
+
+iOS 说明：`src/platform` 已按 Capacitor 原生（Android / iOS）统一分支，iOS 上 BLE、横屏常亮、
+前后台生命周期都会走到与 Android 相同的实现；返回键仍是 Android 专属（iOS 没有该事件）。
+**生成 iOS 工程需要 Mac + Xcode 与 Apple 开发者账号**（未签名包在 iOS 上装不了，这点与 macOS 不同）：
+
+```bash
+npm i @capacitor/ios
+npx cap add ios
+npx cap sync ios
+# 然后在 ios/App/App/Info.plist 里加 NSBluetoothAlwaysUsageDescription，
+# 否则一用蓝牙就会崩溃（插件官方文档明确写了这一条）。
+```
+
+蓝牙在 **iOS 模拟器上不可用**（插件会直接报 "BLE unsupported"），必须真机调试。
+
 ## 七、目录速览
 
 ```

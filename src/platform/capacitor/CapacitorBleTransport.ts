@@ -16,7 +16,12 @@ const SCAN_DURATION_MS = 3_000
 type DelayFunction = (milliseconds: number) => Promise<void>
 type Clock = () => number
 
-/** Capacitor 只负责 Android Native BLE，协议解析和业务重连继续复用 Core。 */
+/**
+ * Capacitor 原生 BLE（Android / iOS 共用）：协议解析和业务重连继续复用 Core。
+ *
+ * initialize 里的 `androidNeverForLocation` 是 Android 专属开关（Android 12+ 用它避免申请定位权限），
+ * iOS 原生实现不读该字段、传了也无副作用，所以不必按平台分支。
+ */
 export class CapacitorBleTransport implements ISensorTransport {
   private initialized: Promise<void> | null = null
   private dataCallbacks = new Set<(packet: SensorDataPacket) => void>()
